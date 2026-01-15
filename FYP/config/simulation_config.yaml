@@ -1,0 +1,598 @@
+# Digital Twin Supply Chain Simulation Configuration
+# This file defines all parameters for the realistic supply chain simulation
+
+simulation:
+  # Simulation duration and time step
+  duration_days: 7  # 1-365 days (can be overridden via CLI --duration-days)
+  time_step_minutes: 1  # 1-60 minutes (can be overridden via CLI --time-step)
+  start_date: "2024-07-15"  # Start date (YYYY-MM-DD) - July 15 = peak monsoon season in Nagpur
+  
+  # Geographic area (Nagpur, India - City Center)
+  # Reduced to manageable size for faster OSM downloads
+  location:
+    name: "Nagpur City (Full Scale)"
+    bounding_box:
+      north: 21.2500
+      south: 21.0500
+      east: 79.2000
+      west: 79.0000
+      
+  # Sim Speed (default, override with --speed)
+  speed_multiplier: 10
+
+# Logging configuration
+logging:
+  # All data flow (snapshots + telemetry) now syncs with time_step (fully dynamic)
+  mqtt_broker: "localhost"
+  mqtt_port: 1883
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  
+  # Heartbeat for simulation liveness detection
+  heartbeat_interval_seconds: 30  # Write heartbeat every N seconds (real-time) regardless of timestep
+
+
+# Warehouse configuration
+warehouses:
+  - id: "WH001"
+    name: "North Logistics Hub"
+    location:
+      lat: 21.2000
+      lon: 79.1000
+    initial_inventory_kg: 50000  # 50 tons of oranges
+    restock_schedule:
+      day_of_week: 0  # Sunday = 0, Monday = 1, etc.
+      time_of_day: "06:00"  # 6 AM
+      quantity_kg: 30000  # 30 tons per restock
+    
+    # Heterogeneous truck fleet
+    fleet:
+      - type: "large"
+        count: 5
+      - type: "medium"
+        count: 10
+  
+  - id: "WH002"
+    name: "South-East Distribution Center"
+    location:
+      lat: 21.0800
+      lon: 79.1500
+    initial_inventory_kg: 30000  # 30 tons
+    restock_schedule:
+      day_of_week: 0
+      time_of_day: "06:00"
+      quantity_kg: 20000  # 20 tons per restock
+    
+    fleet:
+      - type: "medium"
+        count: 3
+      - type: "small"
+        count: 20
+
+# Wholesaler configuration
+# These are wholesale distribution centers that sell to:
+# - Restaurants and cafés (bulk orders)
+# - Small retail shops (restocking)
+# - Hotels and institutions (large orders)
+# - Individual walk-in customers (occasional)
+retailers:
+  # Wholesalers will be distributed across the geographic area
+  count: 12
+  
+  # Demand patterns (time-varying buyer arrivals)
+  # All seasonal/weather/temperature effects preserved from original retail model
+  demand:
+    base_arrival_rate_per_hour: 2  # Wholesale buyers (less frequent but larger orders)
+    
+    # Time-of-day multipliers (24 hours)
+    time_of_day_multipliers:
+      - 0.2  # 00:00-01:00 (closed)
+      - 0.2  # 01:00-02:00
+      - 0.2  # 02:00-03:00
+      - 0.2  # 03:00-04:00
+      - 0.2  # 04:00-05:00
+      - 0.2  # 05:00-06:00
+      - 0.3  # 06:00-07:00
+      - 0.5  # 07:00-08:00
+      - 0.8  # 08:00-09:00 (opening)
+      - 1.0  # 09:00-10:00
+      - 1.2  # 10:00-11:00
+      - 1.5  # 11:00-12:00 (lunch peak)
+      - 1.4  # 12:00-13:00
+      - 1.0  # 13:00-14:00
+      - 0.9  # 14:00-15:00
+      - 1.0  # 15:00-16:00
+      - 1.3  # 16:00-17:00
+      - 1.6  # 17:00-18:00 (evening peak)
+      - 1.5  # 18:00-19:00
+      - 1.2  # 19:00-20:00
+      - 0.8  # 20:00-21:00 (closing)
+      - 0.3  # 21:00-22:00
+      - 0.2  # 22:00-23:00
+      - 0.2  # 23:00-00:00
+    
+    # Day-of-week multipliers (0=Sunday, 6=Saturday)
+    day_of_week_multipliers:
+      - 1.3  # Sunday (higher)
+      - 0.9  # Monday
+      - 0.9  # Tuesday
+      - 0.9  # Wednesday
+      - 1.0  # Thursday
+      - 1.1  # Friday
+      - 1.4  # Saturday (highest)
+    
+    # Seasonal multipliers by month (1=January, 12=December)
+    # Based on fresh produce consumption patterns in India
+    seasonal_multipliers:
+      - 0.95  # January (winter, moderate demand)
+      - 0.95  # February
+      - 1.00  # March (spring begins)
+      - 1.10  # April (hot weather, more fresh produce)
+      - 1.20  # May (peak summer, high demand)
+      - 1.15  # June (monsoon starts, slightly lower)
+      - 1.10  # July (monsoon)
+      - 1.10  # August (monsoon)
+      - 1.05  # September (monsoon ends)
+      - 1.00  # October (post-monsoon)
+      - 0.95  # November (cooler)
+      - 0.90  # December (winter, lowest demand)
+    
+    # Special day multipliers
+    special_days:
+      normal: 1.0
+      public_holiday: 1.4      # 40% more (people at home, cooking)
+      festival_day: 2.0        # 100% more (Diwali, Holi, etc.)
+      day_before_festival: 1.6 # 60% more (stocking up)
+    
+    # Weather effects on demand
+    weather_demand_multipliers:
+      clear: 1.0
+      light_rain: 0.95   # 5% less (people stay home)
+      rain: 0.85         # 15% less
+      heavy_rain: 0.70   # 30% less
+      fog: 0.90          # 10% less
+    
+    # Temperature effects (hot days = more fresh produce)
+    temperature_demand_effect:
+      enabled: true
+      base_temperature_celsius: 25  # Baseline
+      multiplier_per_degree: 0.02   # 2% more demand per degree above baseline
+      max_multiplier: 1.3           # Cap at 30% increase
+    
+    # Wholesale buyer purchase quantity (kg per order)
+    # Represents mix of: restaurants (~80kg), small shops (~50kg), hotels (~250kg), individuals (~10kg)
+    purchase_quantity_mean: 75.0      # Average wholesale order
+    purchase_quantity_std: 40.0       # High variability (different buyer types)
+    purchase_quantity_min: 5.0        # Small walk-in customers
+    purchase_quantity_max: 400.0      # Large institutional bulk orders (hotels, caterers)
+  
+  # Inventory policy (s,S) - reorder when below s, order up to S
+  # Parameters for calculating dynamic reorder points
+  inventory:
+    initial_stock_kg: 2000  # Wholesale starting inventory (4× retail to handle bulk orders)
+    
+    # Service level target (probability of not stocking out)
+    service_level: 0.95  # 95% service level (z-score = 1.65)
+    
+    # Lead time (time from order to delivery)
+    lead_time_days_mean: 1.5    # Average 1.5 days
+    lead_time_days_std: 0.5     # Variability ±0.5 days
+    
+    # Review period (how often to check inventory)
+    review_period_hours: 6      # Check every 6 hours - PRODUCTION VALUE
+    
+    # Order quantity calculation method
+    order_quantity_method: "EOQ"  # Economic Order Quantity or "fixed_days"
+    
+    # EOQ parameters (if using EOQ method)
+    holding_cost_per_kg_per_day: 0.05  # Cost to hold 1 kg for 1 day
+    ordering_cost_per_order: 50        # Fixed cost per order
+    
+    # Fixed days parameters (if using fixed_days method)
+    order_up_to_days: 7         # Order up to 7 days of demand
+    
+    # Safety stock calculation
+    # safety_stock = z_score * std_demand * sqrt(lead_time + review_period)
+    demand_forecast_window_days: 14  # Use last 14 days for forecasting
+    demand_smoothing_alpha: 0.3      # Exponential smoothing parameter
+    
+    # Minimum and maximum order quantities
+    min_order_quantity_kg: 100   # Don't order less than 100 kg
+    max_order_quantity_kg: 5000  # Don't order more than 5000 kg (capacity constraint)
+
+# Truck type definitions (heterogeneous fleet)
+# Research-backed fuel consumption models
+truck_types:
+  small:
+    capacity_kg: 1000  # 1 ton
+    fuel_tank_liters: 80
+    # Fuel consumption in liters per 100 km (realistic model)
+    fuel_consumption_empty_l_per_100km: 22  # Empty truck
+    fuel_consumption_full_l_per_100km: 30   # Full load (36% increase)
+    # Speed-dependent fuel efficiency multipliers
+    fuel_efficiency_by_speed:
+      20_kmh: 1.25   # 25% worse in heavy traffic
+      30_kmh: 1.15   # 15% worse in city
+      40_kmh: 1.05   # 5% worse
+      50_kmh: 1.00   # Optimal efficiency
+      60_kmh: 1.08   # 8% worse
+      70_kmh: 1.18   # 18% worse at highway speeds
+      80_kmh: 1.30   # 30% worse (aerodynamic drag)
+    # Refueling parameters (was hardcoded in truck_agent.py)
+    refueling:
+      rate_liters_per_minute: 40.0
+      setup_time_minutes: 0.5
+      safety_margin_percent: 20  # Extra fuel buffer (1.2x multiplier)
+      default_duration_minutes: 15.0  # Typical refueling duration
+      low_fuel_threshold_percent: 20.0  # Trigger refueling when fuel drops below this
+    max_speed_kmh: 80  # Maximum speed capability
+    cost_per_liter: 1.5  # USD per liter
+    # Loading/unloading operations
+    loading_time_per_ton_minutes: 6    # 6 min per ton to load
+    unloading_time_per_ton_minutes: 4  # 4 min per ton to unload
+    is_refrigerated: false             # Small trucks are open/canvas
+    insulation_factor: 0.2             # Poor insulation
+  
+  medium:
+    capacity_kg: 3000  # 3 tons
+    fuel_tank_liters: 150
+    fuel_consumption_empty_l_per_100km: 28
+    fuel_consumption_full_l_per_100km: 38  # 36% increase
+    fuel_efficiency_by_speed:
+      20_kmh: 1.25
+      30_kmh: 1.15
+      40_kmh: 1.05
+      50_kmh: 1.00
+      60_kmh: 1.08
+      70_kmh: 1.18
+      80_kmh: 1.30
+    max_speed_kmh: 90
+    cost_per_liter: 1.5
+    loading_time_per_ton_minutes: 5
+    unloading_time_per_ton_minutes: 3
+    is_refrigerated: true              # Medium trucks are reefer units
+    insulation_factor: 0.05            # Good insulation
+  
+  large:
+    capacity_kg: 8000  # 8 tons
+    fuel_tank_liters: 300
+    fuel_consumption_empty_l_per_100km: 32
+    fuel_consumption_full_l_per_100km: 45  # 41% increase
+    fuel_efficiency_by_speed:
+      20_kmh: 1.30   # Heavier trucks worse in traffic
+      30_kmh: 1.18
+      40_kmh: 1.08
+      50_kmh: 1.00
+      60_kmh: 1.10
+      70_kmh: 1.22
+      80_kmh: 1.38
+    max_speed_kmh: 85  # Slightly slower than medium
+    cost_per_liter: 1.5
+    loading_time_per_ton_minutes: 4  # More efficient loading (better equipment)
+    unloading_time_per_ton_minutes: 2
+    is_refrigerated: true              # Large trucks are reefer units
+    insulation_factor: 0.03            # Excellent insulation
+
+# ============================================================================
+# DYNAMIC AGENT GENERATION
+# ============================================================================
+agent_generation:
+  enabled: true  # Set to true to dynamically generate warehouses/retailers each run
+  
+  # Minimum spacing to prevent unrealistic clustering
+  min_distances:
+    warehouse_km: 0.01  # ~1km minimum spacing between warehouses
+    retailer_km: 0.005  # ~500m minimum spacing between retailers
+  
+  # Max attempts to find valid location (avoids infinite loops)
+  max_placement_attempts: 50
+  
+  # Multi-warehouse subscription for retailers
+  retailer_warehouse_subscription:
+    min_warehouses: 1  # Minimum warehouses each retailer subscribes to
+    max_warehouses: null  # Maximum warehouses (null = all available warehouses)
+    
+    # Warehouse selection weights for dynamic ordering (must sum to 1.0)
+    selection_criteria:
+      distance_weight: 0.4  # 40% weight - closer warehouses preferred
+      load_weight: 0.6      # 60% weight - less busy warehouses preferred
+  
+
+  warehouses:
+    count_range: [1, 3]  # Generate 1-3 warehouses
+    
+    # Size distribution probabilities
+    size_probabilities:
+      small: 0.4   # 40% probability
+      medium: 0.4  # 40% probability
+      large: 0.2   # 20% probability
+    
+    # Percentages for inventory management
+    initial_inventory_pct: 0.7  # Start 70% full
+    restock_pct: 0.6  # Restock 60% of capacity
+    
+    # Size-specific configuration
+    small:
+      capacity_range_kg: [5000, 10000]
+      fleet_range: [5, 10]
+      fleet_mix:
+        small: 0.6
+        medium: 0.3
+        large: 0.1
+    
+    medium:
+      capacity_range_kg: [15000, 25000]
+      fleet_range: [12, 20]
+      fleet_mix:
+        small: 0.4
+        medium: 0.4
+        large: 0.2
+    
+    large:
+      capacity_range_kg: [35000, 50000]
+      fleet_range: [20, 35]
+      fleet_mix:
+        small: 0.3
+        medium: 0.4
+        large: 0.3
+  
+  retailers:
+    count_range: [5, 15]  # Generate 5-15 retailers
+    
+    # Size-specific capacity ranges
+    capacity_ranges:
+      small: [500, 2000]
+      medium: [2000, 5000]
+      large: [5000, 10000]
+    
+    # Already defined in retailers section
+    initial_stock_percentage: [0.2, 0.3]  # Lowered for faster order demonstration
+    reorder_point_percentage: [0.2, 0.3]
+
+# Traffic simulation parameters (Enhanced realistic model)
+traffic:
+  # Greenshields model: speed = free_flow_speed * (1 - density/jam_density)
+  # Enhanced with lane capacity, weather, and time-of-day effects
+  
+  # Capacity per lane (vehicles per km per lane)
+  capacity_per_lane:
+    motorway: 40
+    trunk: 35
+    primary: 30
+    secondary: 25
+    tertiary: 20
+    residential: 15
+  
+  # Jam density per lane (vehicles/km/lane)
+  jam_density_per_lane:
+    motorway: 120
+    trunk: 100
+    primary: 80
+    secondary: 70
+    tertiary: 60
+    residential: 50
+  
+  # Base traffic density multiplier by road type (fraction of capacity)
+  base_density_fraction:
+    motorway: 0.25   # 25% of capacity during normal hours
+    trunk: 0.35      # 35% of capacity
+    primary: 0.40    # 40% of capacity
+    secondary: 0.45  # 45% of capacity
+    tertiary: 0.35   # 35% of capacity
+    residential: 0.30  # 30% of capacity
+  
+  # Time-of-day traffic multipliers (applied to base density)
+  time_of_day_multipliers:
+    - 0.3  # 00:00-01:00 (low traffic)
+    - 0.2  # 01:00-02:00
+    - 0.2  # 02:00-03:00
+    - 0.2  # 03:00-04:00
+    - 0.3  # 04:00-05:00
+    - 0.5  # 05:00-06:00
+    - 1.2  # 06:00-07:00 (morning rush starts)
+    - 1.8  # 07:00-08:00 (morning rush peak)
+    - 1.9  # 08:00-09:00 (morning rush peak)
+    - 1.5  # 09:00-10:00
+    - 1.2  # 10:00-11:00
+    - 1.1  # 11:00-12:00
+    - 1.0  # 12:00-13:00
+    - 1.1  # 13:00-14:00
+    - 1.2  # 14:00-15:00
+    - 1.3  # 15:00-16:00
+    - 1.6  # 16:00-17:00 (evening rush starts)
+    - 2.0  # 17:00-18:00 (evening rush peak)
+    - 1.9  # 18:00-19:00 (evening rush peak)
+    - 1.5  # 19:00-20:00
+    - 1.0  # 20:00-21:00
+    - 0.7  # 21:00-22:00
+    - 0.5  # 22:00-23:00
+    - 0.4  # 23:00-00:00
+  
+  # Weather effects on traffic speed
+  weather_speed_reduction:
+    clear: 1.00      # No reduction
+    light_rain: 0.90  # 10% slower
+    rain: 0.85        # 15% slower
+    heavy_rain: 0.70  # 30% slower
+    fog: 0.75         # 25% slower
+  
+  # Weather effects on traffic density (people drive more cautiously)
+  weather_density_increase:
+    clear: 1.00
+    light_rain: 1.10  # 10% more cautious spacing
+    rain: 1.20        # 20% more spacing
+    heavy_rain: 1.35  # 35% more spacing
+    fog: 1.30         # 30% more spacing
+  
+  # Night driving effects (reduced visibility)
+  night_speed_reduction: 0.95  # 5% slower at night (10pm-6am)
+
+# Disruption simulation (accidents, road closures)
+# Research-backed accident rates from traffic safety studies
+disruptions:
+  accidents:
+    # Base accident rate per million vehicle-kilometers by road type
+    # Source: WHO Global Road Safety Report, Indian traffic data
+    # ADJUSTED: Reduced by ~97% combined with active truck segment filtering
+    # to achieve realistic 1-3 accidents per day in city-scale simulation
+    base_rate_per_million_vkm:
+      motorway: 0.01      # Was 0.3 (safest roads, very rare accidents)
+      trunk: 0.025        # Was 0.8 (relatively safe)
+      primary: 0.045      # Was 1.5 (moderate risk)
+      secondary: 0.075    # Was 2.5 (higher risk)
+      tertiary: 0.11      # Was 3.5 (high risk)
+      residential: 0.12   # Was 4.0 (highest risk - pedestrians, intersections)
+    
+    # Time-of-day multipliers (night is more dangerous)
+    time_multipliers:
+      day: 1.0           # 6am-6pm
+      evening: 1.5       # 6pm-10pm (rush hour, fatigue)
+      night: 3.0         # 10pm-6am (reduced visibility, fatigue, drunk driving)
+    
+    # Weather multipliers (wet roads increase accidents)
+    weather_multipliers:
+      clear: 1.0
+      light_rain: 1.8    # 80% increase
+      rain: 2.5          # 150% increase
+      heavy_rain: 4.0    # 300% increase
+      fog: 3.5           # 250% increase
+    
+    # Traffic density effect (more vehicles = more accidents, but not linear)
+    # accident_multiplier = 0.5 + 1.5 * (density / jam_density)
+    # Low density (0.2): 0.8x, Medium (0.5): 1.25x, High (0.8): 1.7x
+    density_effect_enabled: true
+    
+    # Accident duration distribution (minutes)
+    duration_mean: 45
+    duration_std: 20
+    duration_min: 15
+    duration_max: 180
+    
+    # Severity levels and their probabilities
+    severity_distribution:
+      minor: 0.70        # 70% minor (1 lane blocked, fender bender)
+      moderate: 0.25     # 25% moderate (2 lanes blocked, injuries)
+      severe: 0.05       # 5% severe (all lanes blocked, major injuries)
+    
+    # Duration multipliers by severity
+    severity_duration_multiplier:
+      minor: 0.5         # 50% of base duration
+      moderate: 1.0      # 100% of base duration
+      severe: 2.5        # 250% of base duration (requires emergency services)
+
+# Cargo monitoring (oranges)
+cargo:
+  product_type: "oranges"
+  
+  # Temperature management
+  target_temperature_celsius: 4.0  # Refrigerated transport
+  temperature_tolerance: 2.0  # ±2°C acceptable
+  
+  # Spoilage model (Arrhenius equation - already implemented in orange_batch.py)
+  # RSL (Remaining Shelf Life) decreases based on temperature
+  initial_rsl_hours: 336  # 14 days at optimal temperature
+  
+  # Quality thresholds
+  min_acceptable_rsl_hours: 48  # Reject if < 2 days remaining
+
+# Quality control parameters
+quality_control:
+  # Minimum acceptable quality for deliveries (warehouse perspective)
+  min_acceptable_rsl_hours: 72.0  # Minimum 72 hours RSL for delivery acceptance (was hardcoded)
+  
+  # Storage environment parameters
+  warehouse_storage_temp_celsius: 6.0    # Cold storage temperature
+  warehouse_storage_humidity_percent: 88.0  # Cold storage humidity
+
+# Warehouse operations
+warehouse_operations:
+  # Inventory batch operations
+  batch_size_kg: 1000  # Default batch size for inventory allocation (was hardcoded in warehouse_agent.py)
+  
+  # Docking and loading operations
+  docking_wait_time_mean_minutes: 15  # Average wait for dock availability
+  docking_wait_time_std_minutes: 10   # Variability in wait time
+  max_simultaneous_loading: 3         # Number of loading docks
+  
+  # Restocking operations (dynamic based on inventory)
+  restock_policy:
+    target_inventory_days: 14         # Maintain 2 weeks of stock
+    min_order_quantity_kg: 10000      # Minimum order size
+    lead_time_days_mean: 1            # Average delivery time from supplier
+    lead_time_days_std: 0.3           # Variability (±0.3 days)
+    delivery_reliability: 0.95        # 95% on-time delivery rate
+    check_interval_hours: 24          # Check inventory daily
+
+driver_model:
+  shift_duration_hours: 10
+  mandatory_break_after_hours: 5
+  break_duration_minutes: 30
+  fatigue_speed_reduction_per_hour: 0.01
+  fatigue_accident_multiplier_per_hour: 0.15
+  skill_distribution:
+    novice: 0.15
+    experienced: 0.70
+    expert: 0.15
+
+# Routing and navigation
+routing:
+  # Route recalculation settings
+  recalculation_interval_minutes: 5  # Check for better routes every 5 minutes
+  recalculation_threshold: 0.10      # Switch if new route is >10% better
+  
+  # Route caching (performance optimization)
+  cache_enabled: true
+  cache_ttl_minutes: 30              # Cache routes for 30 minutes
+  cache_invalidate_on_accident: true # Invalidate cache when accidents occur
+  
+  # Multi-objective cost function weights
+  cost_weights:
+    distance_km: 1.0      # Base weight for distance
+    time_minutes: 0.5     # Weight for travel time
+    fuel_liters: 2.0      # Weight for fuel cost (expensive!)
+    road_quality: 5.0     # Weight for road quality/safety
+  
+  # Road quality penalties (added to cost calculation)
+  road_quality_penalties:
+    paved: 0.0
+    asphalt: 0.0
+    concrete: 0.0
+    unpaved: 1.0
+    gravel: 2.0
+    dirt: 3.0
+    unknown: 1.5
+  
+  # Single lane penalty (narrow roads are riskier)
+  single_lane_penalty: 1.0
+    
+  # Avoid preferences
+  avoid_blocked_segments: true
+  avoid_high_accident_roads: false  # Don't avoid by default (would be too restrictive)
+  prefer_highways: true             # Prefer faster roads when available
+
+# Weather simulation (affects traffic, accidents, demand)
+weather:
+  # Weather state probabilities (Nagpur climate)
+  state_probabilities:
+    clear: 0.70         # 70% clear days
+    light_rain: 0.15    # 15% light rain
+    rain: 0.10          # 10% rain
+    heavy_rain: 0.04    # 4% heavy rain
+    fog: 0.01           # 1% fog (winter mornings)
+  
+  # Weather persistence (hours) - weather doesn't change every minute
+  average_duration_hours:
+    clear: 12
+    light_rain: 3
+    rain: 4
+    heavy_rain: 2
+    fog: 3
+  
+  # Seasonal adjustments (month-based)
+  monsoon_months: [6, 7, 8, 9]  # June-September
+  monsoon_rain_probability_multiplier: 3.0  # 3x more rain during monsoon
+
+# IoT Sensor Simulation
+sensors:
+  gps_noise: 0.00005     # approx 5 meters
+  temp_noise: 0.5        # degrees Celsius
+  stock_noise_kg: 2.0    # kg noise in load cells

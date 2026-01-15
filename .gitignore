@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Environment Variables
+.env
+.env.local
+
+# IDEdevelopment
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project Specific
+FYP_ForSharing/
+FYP_ForSharing.zip
+*.log
+*.csv
+
+# Database
+*.db
+*.sqlite3
+
+# InfluxDB
+influxdb-data/
+influxdb-config/
+
+# Node.js (for dashboard)
+node_modules/
+npm-debug.log*
+package-lock.json
+.npm
+
+# Build outputs
+dashboard_v2/dist/
+dashboard_v2/build/
+
+# Cache
+.cache/
+*.cache
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# Coverage
+.coverage
+htmlcov/
