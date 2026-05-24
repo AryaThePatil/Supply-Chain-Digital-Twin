@@ -1,5 +1,5 @@
 import pytest
-from src.simulation.entities.accident import Accident
+from src.simulation.entities import Accident
 
 class TestAccident:
     def test_initialization(self):

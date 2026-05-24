@@ -1,0 +1,4 @@
+# file: C:\Users\aryap\OneDrive\Desktop\Arya_College\FYP_Dynamic\FYP\src\simulation\network\road_segment.py
+# hypothesis_version: 6.151.10
+
+[0.0, 0.001, 0.01, 0.05, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0, 1.15, 1.25, 1.35, 1.45, 1.5, 10.0, 50.0, 100.0, 100, 'RESIDENTIAL', 'asphalt', 'concrete', 'current_speed_kmh', 'dirt', 'earth', 'end_node', 'grass', 'gravel', 'inf', 'is_blocked', 'lanes', 'length_km', 'link', 'living_street', 'minor', 'moderate', 'motorway', 'motorway_link', 'nan', 'path', 'paved', 'primary', 'primary_link', 'residential', 'road_type', 'secondary', 'secondary_link', 'segment_id', 'severe', 'speed_limit_kmh', 'start_node', 'surface_type', 'tertiary', 'tertiary_link', 'track', 'trunk', 'trunk_link', 'unclassified', 'unpaved']

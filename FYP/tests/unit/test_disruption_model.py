@@ -5,7 +5,7 @@ road type base rates, severity distribution, and accident clearance.
 """
 import pytest
 from unittest.mock import Mock, MagicMock
-from src.simulation.models.disruption_model import DisruptionModel
+from src.simulation.environment_models import DisruptionModel
 from src.simulation.network.road_segment import RoadSegment
 
 

@@ -1,0 +1,4 @@
+# file: C:\Users\aryap\OneDrive\Desktop\Arya_College\FYP_Dynamic\FYP\src\data\loaders.py
+# hypothesis_version: 6.151.10
+
+[0.01, 0.05, 0.1, 0.5, 10.0, 24.0, 25.0, 100, 365, 500, 720, 1440, 3500, 10080, '\nDataset Statistics:', '=', '__main__', 'arrival_tonnes', 'arrivals', 'date', 'date_range', 'end', 'hour', 'humidity', 'humidity_percent', 'key', 'lookup_table', 'market_data', 'max', 'mean', 'min', 'month', 'nearest', 'occupancy_percent', 'precipitation', 'precipitation_mm', 'price', 'quality_score', 'rain', 'rain_mm', 'simulation_minutes', 'start', 'state', 'temperature', 'temperature_celsius', 'time', 'timestamp', 'total_records', 'volume_count', 'weather_state', 'weather_states']

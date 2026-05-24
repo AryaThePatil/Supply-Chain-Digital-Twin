@@ -1,0 +1,4 @@
+# file: C:\Users\aryap\OneDrive\Desktop\Arya_College\FYP_Dynamic\FYP\src\simulation\prediction_pod.py
+# hypothesis_version: 6.151.10
+
+[0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9, 1.0, 1.2, 1.5, 1.8, 2.0, 5.0, 12.0, 24.0, 60.0, 72.0, 100.0, 336.0, 'ai', 'cargo', 'clear', 'cloudy', 'decay_rate_per_hour', 'enabled', 'eta', 'fog', 'heavy_rain', 'initial_rsl_hours', 'light_rain', 'min_samples_to_train', 'motorway', 'ok', 'partly_cloudy', 'predicted_rsl_hours', 'predicted_rsl_pct', 'prediction', 'primary', 'quality_control', 'rain', 'recommendation', 'reject', 'residential', 'ridge_lambda', 'road_type', 'route_progress', 'rsl', 'safety_margin_hours', 'secondary', 'segment_objects', 'tertiary', 'trunk', 'warn']

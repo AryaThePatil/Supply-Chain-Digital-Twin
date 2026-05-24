@@ -1,7 +1,7 @@
 """Unit tests for InventoryModel."""
 
 import pytest
-from src.simulation.models.inventory_model import InventoryModel
+from src.simulation.business_models import InventoryModel
 
 
 @pytest.fixture
@@ -34,30 +34,24 @@ def test_inventory_model_initialization(inventory_model):
     assert inventory_model.service_level == 0.95
     assert inventory_model.z_score > 0  # Should be ~1.65 for 95%
     assert inventory_model.forecasted_demand_rate == 0.0  # No data yet
-    assert len(inventory_model.demand_history) == 0
+    assert len(inventory_model.demand_history_full) == 0
 
 
 def test_record_demand(inventory_model):
     """Test recording demand updates history."""
     inventory_model.record_demand(100, 50)
-    assert len(inventory_model.demand_history) == 1
-    assert inventory_model.demand_history[0] == (100, 50)
+    assert len(inventory_model.demand_history_full) == 1
+    entry = inventory_model.demand_history_full[0]
+    assert entry['time'] == 100
+    assert entry['demand'] == 50
 
 
 def test_demand_history_window(inventory_model):
-    """Test demand history is limited to forecast window."""
-    window = 14 * 24 * 60  # 14 days in minutes
-    
-    # Add old demand (outside window)
-    inventory_model.record_demand(0, 100)
-    
-    # Add recent demand (inside window)
-    current_time = window + 1000
-    inventory_model.record_demand(current_time, 50)
-    
-    # Old demand should be removed
-    assert len(inventory_model.demand_history) == 1
-    assert inventory_model.demand_history[0][0] == current_time
+    """Test demand history is limited to 1000 entries."""
+    # Add 1001 entries — oldest should be dropped
+    for i in range(1001):
+        inventory_model.record_demand(float(i), 10.0)
+    assert len(inventory_model.demand_history_full) == 1000
 
 
 def test_forecast_update(inventory_model):
@@ -111,7 +105,7 @@ def test_reorder_point_with_variability(inventory_model):
     reorder_low_var = inventory_model.calculate_reorder_point()
     
     # Reset and add high variability demand
-    inventory_model.demand_history.clear()
+    inventory_model.demand_history_full.clear()
     inventory_model.forecasted_demand_rate = 0
     for i in range(20):
         demand = 10 if i % 2 == 0 else 30  # Alternating

@@ -11,11 +11,14 @@ from typing import Dict, Any, List, Optional
 import random
 import os
 import logging
+import time
+from pathlib import Path
 
-from .events import EventQueue, AccidentStartEvent, AccidentEndEvent
+from .events import EventQueue, AccidentStartEvent, AccidentEndEvent, EventBus
 from .network import RoadNetwork, Router, TrafficModel
-from .models.weather_model import WeatherModel
-from .models.disruption_model import DisruptionModel
+from .environment_models import WeatherModel
+from .environment_models import DisruptionModel
+from .ai_manager import AIManager
 try:
     from data.mqtt_client import MQTTClientWrapper
     from data.config_loader import ConfigLoader
@@ -46,7 +49,8 @@ class SimulationEngine:
     
     def __init__(self, config: Dict[str, Any], duration_days: Optional[int] = None,
                  time_step_minutes: Optional[int] = None, random_seed: Optional[int] = None,
-                 speed_multiplier: Optional[float] = None, start_date: Optional[str] = None):
+                 speed_multiplier: Optional[float] = None, start_date: Optional[str] = None,
+                 steps: Optional[int] = None, headless: bool = False):
         """
         Initialize the simulation engine.
         
@@ -57,8 +61,11 @@ class SimulationEngine:
             random_seed: Random seed for reproducibility
             speed_multiplier: Simulation speed (None = max speed)
             start_date: Override config start date (YYYY-MM-DD format)
+            steps: Optional simulation steps (minutes) to run, overrides duration_days
+            headless: If True, disable all external logging (MQTT/InfluxDB) and speed control
         """
         self.config = config
+        self.headless = headless
         
         # Time management
         self.current_time = 0.0  # minutes since start
@@ -73,8 +80,15 @@ class SimulationEngine:
             self.sim_start_datetime = datetime(2023, 1, 1)
             
         self.time_step = time_step_minutes or config.get('simulation', {}).get('time_step_minutes', 1)
+        
+        # Define duration_days_config unconditionally so it's always available for logging
         duration_days_config = duration_days or config.get('simulation', {}).get('duration_days', 7)
-        self.max_time = duration_days_config * 24 * 60  # convert days to minutes
+        
+        if steps is not None:
+            self.max_time = float(steps * self.time_step)
+            logger.info(f"Simulation duration set by steps: {steps} ({self.max_time} minutes)")
+        else:
+            self.max_time = float(duration_days_config * 24 * 60)
         
         # Generate unique run ID
         self.run_id = f"sim-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
@@ -102,54 +116,75 @@ class SimulationEngine:
         self.retailers: List = []
         self.trucks: List = []
         self.event_queue = EventQueue()
+        self.event_bus = EventBus()  # NEW: Reactive internal communication
         self.active_accidents: List = []  # Track active accidents
+        self._telemetry_buffer: List[Point] = []  # Buffer for batched writes
         
-        # Initialize MQTT client for logging
-        mqtt_broker = os.getenv('MQTT_BROKER', 'localhost')
-        mqtt_port = int(os.getenv('MQTT_PORT', '1883'))
-        self.mqtt_client = MQTTClientWrapper(
-            broker=mqtt_broker,
-            port=mqtt_port,
-            client_id=f"sim-engine-{self.run_id}"
-        )
+        # Status code mapping for InfluxDB telemetry (numeric fields avoid type conflicts)
+        self.status_codes = {
+            'idle': 0.0, 'loading': 1.0, 'in_transit': 2.0,
+            'unloading': 3.0, 'unloading_complete': 4.0,
+            'arrived': 5.0, 'refueling': 6.0, 'destroyed': 7.0
+        }
+        
+        # AI Ecosystem Manager (Phase 4)
+        self.ai_manager = AIManager(self.config)
+        
+        # Initialize MQTT client for logging (Skip if headless)
         self.mqtt_connected = False
-        
-        # Initialize InfluxDB client for direct writes
-        influx_url = os.getenv('INFLUX_URL', 'http://localhost:8086')
-        influx_token = os.getenv('INFLUX_TOKEN', 'my-super-secret-auth-token')
-        influx_org = os.getenv('INFLUX_ORG', 'digital-twin')
-        influx_bucket = os.getenv('INFLUX_BUCKET', 'supply-chain')
-        
-        try:
-            self.influx_client = InfluxDBClient(url=influx_url, token=influx_token, org=influx_org)
-            
-            # OPTIMIZATION 3: Async batched writes
-            # Use WriteOptions for automatic batching and async I/O
-            from influxdb_client.client.write_api import WriteOptions
-            write_options = WriteOptions(
-                batch_size=100,          # Write in batches of 100 points
-                flush_interval=1_000,    # Flush every 1 second
-                jitter_interval=0,       # No jitter
-                retry_interval=5_000,    # Retry after 5 seconds on failure
-                max_retries=3,           # Max 3 retries
-                max_retry_delay=30_000,  # Max 30 sec retry delay
-                exponential_base=2       # Exponential backoff
+        if not self.headless:
+            mqtt_broker = os.getenv('MQTT_BROKER', 'localhost')
+            mqtt_port = int(os.getenv('MQTT_PORT', '1883'))
+            self.mqtt_client = MQTTClientWrapper(
+                broker=mqtt_broker,
+                port=mqtt_port,
+                client_id=f"sim-engine-{self.run_id}"
             )
-            self.influx_write_api = self.influx_client.write_api(write_options=write_options)
-            self.influx_bucket = influx_bucket
-            self.influx_connected = True
-            logger.info(f"InfluxDB connected: {influx_url} (async batched writes enabled)")
-        except Exception as e:
-            logger.warning(f"InfluxDB connection failed: {e}")
-            self.influx_connected = False
+        
+        # Initialize InfluxDB client for direct writes (Skip if headless)
+        self.influx_connected = False
+        if not self.headless:
+            influx_url = os.getenv('INFLUX_URL', 'http://localhost:8086')
+            influx_token = os.getenv('INFLUX_TOKEN', 'my-super-secret-auth-token')
+            influx_org = os.getenv('INFLUX_ORG', 'digital-twin')
+            influx_bucket = os.getenv('INFLUX_BUCKET', 'supply-chain')
+            
+            try:
+                self.influx_client = InfluxDBClient(url=influx_url, token=influx_token, org=influx_org)
+                
+                # OPTIMIZATION 3: Async batched writes
+                from influxdb_client.client.write_api import WriteOptions
+                write_options = WriteOptions(
+                    batch_size=100,
+                    flush_interval=1_000,
+                    jitter_interval=0,
+                    retry_interval=5_000,
+                    max_retries=3,
+                    max_retry_delay=30_000,
+                    exponential_base=2
+                )
+                self.influx_write_api = self.influx_client.write_api(write_options=write_options)
+                self.influx_bucket = influx_bucket
+                self.influx_connected = True
+                logger.info(f"InfluxDB connected: {influx_url} (async batched writes enabled)")
+            except Exception as e:
+                logger.warning(f"InfluxDB connection failed: {e}")
+        
+        # Skip MQTT/Influx logging if headless
+        if self.headless:
+            logger.info("HEADLESS MODE: External logging and speed control disabled")
         
         # Logging configuration
-        # All data flow now syncs with time_step (fully dynamic)
         self.last_snapshot_time = 0
-        
-        # Heartbeat for simulation liveness detection (real-time based)
-        self.heartbeat_interval = config.get('logging', {}).get('heartbeat_interval_seconds', 30)
+        # Headless logging fallback (CSV)
+        self.headless_log_enabled = headless
+        self.log_dir = Path("data/logs/telemetry")
+        if self.headless_log_enabled:
+             self.log_dir.mkdir(parents=True, exist_ok=True)
+             self._init_csv_loggers()
+             
         self.last_heartbeat_time = 0.0  # Tracks real-time (time.time()), not simulation time
+        self.heartbeat_interval = 60.0  # Real-time seconds between heartbeats
         
         logger.info("SimulationEngine initialized")
         logger.info(f"Run ID: {self.run_id}")
@@ -158,6 +193,26 @@ class SimulationEngine:
         if self.random_seed is not None:
             logger.info(f"Random seed: {self.random_seed}")
     
+    @property
+    def all_trucks(self):
+        """Live view of all trucks across all warehouses."""
+        return [t for wh in self.warehouses for t in wh.trucks]
+    
+    def _init_csv_loggers(self):
+        """Initialize CSV files for headless telemetry and event logging."""
+        import csv
+        self.telemetry_csv_path = self.log_dir / f"telemetry_{self.run_id}.csv"
+        self.event_csv_path = self.log_dir / f"events_{self.run_id}.csv"
+        
+        # Write headers
+        with open(self.telemetry_csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['timestamp', 'entity_type', 'entity_id', 'status_code', 'fuel', 'rsl', 'lat', 'lon'])
+            
+        with open(self.event_csv_path, 'w', newline='') as f:
+             writer = csv.writer(f)
+             writer.writerow(['timestamp', 'event_type', 'data'])
+
     def initialize_road_network(self, use_cache: bool = True) -> None:
         """
         Initialize road network from OpenStreetMap.
@@ -173,8 +228,9 @@ class SimulationEngine:
         self.road_network = RoadNetwork(self.config)
         self.road_network.load(use_cache=use_cache)
         
-        # Create traffic model
+        # Create traffic model and link it to the road network for agent awareness
         self.traffic_model = TrafficModel(self.config)
+        self.road_network.traffic_model = self.traffic_model
         
         # Initialize traffic state for all segments (one-time at startup)
         logger.info("Initializing traffic state for entire network...")
@@ -200,14 +256,28 @@ class SimulationEngine:
         
         # Initialize WeatherModel (Phase 3)
         if 'weather' in self.config:
-            self.weather_model = WeatherModel(self.config)
+            # Check if real data mode is enabled in configuration
+            weather_config = self.config.get('weather', {})
+            use_real_data = weather_config.get('use_real_data', False)
+            dataset_path = weather_config.get('dataset_path', None)
+            
+            self.weather_model = WeatherModel(
+                self.config,
+                use_real_data=use_real_data,
+                dataset_path=dataset_path
+            )
             
             # CRITICAL FIX: Initialize weather with correct season at t=0
             initial_month = self.sim_start_datetime.month
             initial_hour = self.sim_start_datetime.hour + (self.sim_start_datetime.minute / 60.0)
             self.weather_model.update(0, month=initial_month, hour=initial_hour)
             
-            logger.info(f"Weather system enabled (Starting: {self.weather_model.current_state}, Month {initial_month})")
+            data_mode = "REAL DATA" if self.weather_model.use_real_data else "SIMULATION"
+            logger.info(f"Weather system enabled ({data_mode} mode, Starting: {self.weather_model.current_state}, Month {initial_month})")
+            
+            # Phase 1 SYNC: Inform traffic model of the initial weather state
+            if self.traffic_model:
+                self.traffic_model.set_environment(self.weather_model.current_state, initial_month)
         else:
             self.weather_model = None
             logger.info("Weather system disabled")
@@ -228,7 +298,7 @@ class SimulationEngine:
         Each warehouse has a restock schedule (day of week, time of day, quantity).
         This method schedules all restock events for the simulation duration.
         """
-        from .events.event_types import WarehouseRestockEvent
+        from .events import WarehouseRestockEvent
         
         logger.info("Scheduling warehouse restocking events...")
         
@@ -267,6 +337,11 @@ class SimulationEngine:
                 current_week += 1
         
         logger.info("Restocking events scheduled")
+
+        # Register warehouses with AIManager for cross-agent coordination
+        if self.ai_manager is not None and self.warehouses:
+            self.ai_manager.register_warehouses(self.warehouses)
+            logger.info(f"[AIManager] Registered {len(self.warehouses)} warehouses for cross-agent sync")
         
         # OPTIMIZATION 5: Pre-compute common routes
         if self.router and self.warehouses and self.retailers:
@@ -280,86 +355,207 @@ class SimulationEngine:
     def run(self):
         """
         Execute the main simulation loop.
-        
+
         Loop structure:
-        1. Process scheduled events (if any at current_time)
-        2. Update all agents (trucks move, retailers sell, warehouses process)
-        3. Update environment (traffic, accidents)
-        4. Check for new stochastic events (customer arrivals, accidents)
-        5. Log data (events, snapshots, telemetry)
-        6. Advance time
+        1. Connect to external services (MQTT / InfluxDB) unless headless
+        2. Log startup parameters
+        3. Process events, update agents/environment, log, advance time
+        4. Cleanup on completion
         """
         logger.info("=" * 80)
         logger.info(f"Starting simulation: {self.run_id}")
         logger.info("=" * 80)
-        
-        # Connect to MQTT broker
-        try:
-            self.mqtt_connected = self.mqtt_client.connect()
-        except Exception as e:
-            logger.warning("MQTT connection failed. Logging will be disabled.")
-            logger.warning("Make sure Docker containers are running (docker-compose up -d)")
-            self.mqtt_connected = False
-        
+
+        # Connect to MQTT broker (skip if headless)
+        if not self.headless:
+            try:
+                self.mqtt_connected = self.mqtt_client.connect()
+            except Exception as e:
+                logger.warning(f"MQTT connection failed ({e}). Logging will be disabled.")
+                logger.warning("Make sure Docker containers are running (docker-compose up -d)")
+                self.mqtt_connected = False
+
         # Log simulation parameters at startup
         self._log_startup_parameters()
-        
-        # Main simulation loop
-        import time
-        
+
+        self.last_snapshot_time = self.current_time
+        self.last_logged_day = int(self.current_time / (24 * 60))
+
         while self.current_time < self.max_time:
-            loop_start = time.time()
-            
-            # 1. Process scheduled events
-            if self.event_queue:
-                self._process_events()
-            
-            # 2. Update all agents
-            self._update_agents()
-            
-            # 3. Update environment
-            self._update_environment()
-            
-            # 4. Check for new stochastic events
-            self._check_stochastic_events()
-            
-            # 5. Logging
-            self._handle_logging()
-            
-            # 6. Heartbeat (liveness detection - real-time based)
-            self._check_and_write_heartbeat()
-            
-            # 7. Advance time
-            self.current_time += self.time_step
-            
-            # Progress indicator (every simulated day)
-            # Use day boundary check instead of modulo to handle non-dividing timesteps
-            current_day = int(self.current_time / (24 * 60))
-            if current_day > self.last_logged_day:
-                logger.info(f"[Simulation time: Day {current_day}]")
-                self.last_logged_day = current_day
-            
-            # Speed Control: Sleep to maintain target speed
-            if self.speed_multiplier:
-                # 1 sim minute = 60 sim seconds
-                # Targeted real time duration = (time_step_minutes * 60) / speed_multiplier
-                target_duration = (self.time_step * 60.0) / self.speed_multiplier
-                
-                # Calculate how much time we actually spent
-                elapsed = time.time() - loop_start
-                
-                # Sleep if we were too fast
-                if elapsed < target_duration:
-                    time.sleep(target_duration - elapsed)
-        
+            self.step()
+
         # Simulation complete
         logger.info("=" * 80)
         logger.info(f"Simulation complete: {self.run_id}")
         logger.info(f"Total time simulated: {self.current_time / 60 / 24:.2f} days")
         logger.info("=" * 80)
-        
+
         self._cleanup()
+
+    def step(self):
+        """
+        Execute a single simulation time step.
+        
+        Returns:
+            Dict containing basic loop metrics
+        """
+        loop_start = time.time()
+        
+        # 1. Process scheduled events
+        if self.event_queue:
+            self._process_events()
+
+        # 1b. Apply any pending scenario commands from the dashboard
+        self._apply_scenario_commands()
+
+        # 2. Update all agents
+        self._update_agents()
+        
+        # 3. Update environment
+        self._update_environment()
+        
+        # 4. Check for new stochastic events
+        self._check_stochastic_events()
+        
+        # 5. Logging
+        self._handle_logging()
+        
+        # 6. Heartbeat (liveness detection - real-time based)
+        self._check_and_write_heartbeat()
+        
+        # 7. Advance time
+        self.current_time += self.time_step
+        
+        # Progress indicator (every simulated day)
+        current_day = int(self.current_time / (24 * 60))
+        if current_day > self.last_logged_day:
+            logger.info(f"[Simulation time: Day {current_day}]")
+            self.last_logged_day = current_day
+        
+        # Speed Control: Sleep to maintain target speed (Skip if headless)
+        if self.speed_multiplier and not self.headless:
+            target_duration = (self.time_step * 60.0) / self.speed_multiplier
+            elapsed = time.time() - loop_start
+            if elapsed < target_duration:
+                time.sleep(target_duration - elapsed)
+        
+        return {
+            'sim_time': self.current_time,
+            'real_time_step': time.time() - loop_start
+        }
     
+    def _apply_scenario_commands(self) -> None:
+        """
+        Read and apply pending scenario commands written by the dashboard API.
+
+        Commands are stored in data/scenario_commands.json as a list of dicts.
+        Each command has an 'applied' flag; once applied it is marked True so it
+        is not re-applied on subsequent ticks.  The file is only written when a
+        command is actually applied, keeping I/O minimal.
+        """
+        import json
+        from pathlib import Path
+
+        cmd_file = Path("data/scenario_commands.json")
+        if not cmd_file.exists():
+            return
+
+        try:
+            with open(cmd_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return  # Corrupt or locked — skip this tick
+
+        commands = data.get("commands", [])
+        pending = [c for c in commands if not c.get("applied", False)]
+        if not pending:
+            return
+
+        modified = False
+        for cmd in pending:
+            ctype = cmd.get("type")
+            try:
+                if ctype == "inject_accident" and self.road_network:
+                    raw_seg_id = cmd["segment_id"]
+
+                    # Resolve "truck:TRUCK_ID" placeholder to the truck's current segment
+                    if raw_seg_id.startswith("truck:"):
+                        truck_id = raw_seg_id[len("truck:"):]
+                        resolved = None
+                        for wh in self.warehouses:
+                            for truck in wh.trucks:
+                                if truck.truck_id == truck_id and truck.current_route:
+                                    segs = truck.current_route.get("segments", [])
+                                    prog = getattr(truck, "route_progress", 0)
+                                    if prog < len(segs):
+                                        resolved = segs[prog]
+                                        break
+                            if resolved:
+                                break
+                        if not resolved:
+                            logger.warning(f"[SCENARIO] Could not resolve segment for truck {truck_id}")
+                            cmd["applied"] = True
+                            modified = True
+                            continue
+                        segment_id = resolved
+                    else:
+                        segment_id = raw_seg_id
+
+                    seg = self.road_network.get_segment(segment_id)
+                    if seg:
+                        severity = cmd.get("severity", "moderate")
+                        seg.set_accident(severity=severity)
+                        # Schedule automatic clearance via the event queue
+                        duration = float(cmd.get("duration_minutes", 30))
+                        from .events import AccidentEndEvent
+                        clear_time = self.current_time + duration
+                        self.event_queue.schedule(
+                            AccidentEndEvent(time=clear_time, segment_id=segment_id)
+                        )
+                        # Publish alert so trucks reroute proactively
+                        self.event_bus.publish("accident_alert", {"segment_id": segment_id})
+                        logger.info(
+                            f"[SCENARIO] Injected {severity} accident on {segment_id} "
+                            f"for {duration:.0f} min"
+                        )
+
+                elif ctype == "adjust_demand":
+                    retailer_id = cmd.get("retailer_id")
+                    multiplier  = float(cmd.get("multiplier", 1.0))
+                    for retailer in self.retailers:
+                        if retailer.retailer_id == retailer_id:
+                            retailer.demand_model.base_arrival_rate *= multiplier
+                            logger.info(
+                                f"[SCENARIO] Demand for {retailer_id} adjusted ×{multiplier:.2f} "
+                                f"→ {retailer.demand_model.base_arrival_rate:.2f} customers/hr"
+                            )
+                            break
+
+                elif ctype == "trigger_stockout":
+                    warehouse_id = cmd.get("warehouse_id")
+                    for wh in self.warehouses:
+                        if wh.warehouse_id == warehouse_id:
+                            wh.current_inventory_kg = 0.0
+                            wh.inventory_batches    = []
+                            wh._perceived_inventory_kg = 0.0
+                            logger.info(f"[SCENARIO] Stockout triggered at {warehouse_id}")
+                            break
+
+            except Exception as e:
+                logger.warning(f"[SCENARIO] Failed to apply command {ctype}: {e}")
+
+            cmd["applied"] = True
+            modified = True
+
+        if modified:
+            try:
+                tmp = cmd_file.with_suffix(".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                tmp.replace(cmd_file)
+            except OSError as e:
+                logger.warning(f"[SCENARIO] Could not write command file: {e}")
+
     def _process_events(self):
         """Process all events scheduled for current time."""
         events = self.event_queue.get_events_at(self.current_time)
@@ -371,8 +567,8 @@ class SimulationEngine:
         # Calculate time context for agents
         current_dt = self.sim_start_datetime + timedelta(minutes=self.current_time)
         
-        # 0=Sunday, 1=Monday... (matching config convention 0=Sunday)
-        # Python weekday(): 0=Monday. (0+1)%7 = 1 (Mon). (6+1)%7 = 0 (Sunday).
+        # Python weekday(): 0=Mon. Formula (weekday+1)%7 maps to: Mon?1, Tue?2, ..., Sun?0
+        # Matches config convention where day_of_week_multipliers[0] = Sunday
         day_of_week = (current_dt.weekday() + 1) % 7
         
         month = current_dt.month
@@ -380,11 +576,15 @@ class SimulationEngine:
         
         weather = self.weather_model.current_state if self.weather_model else "clear"
         
+        # Phase 1 SYNC: Update traffic model with latest weather/season for peak-wave broadening
+        if self.traffic_model:
+            self.traffic_model.set_environment(weather, month)
+
         # Get temperature and humidity from weather model
         if self.weather_model and hasattr(self.weather_model, 'get_temperature'):
-            temperature = self.weather_model.get_temperature(month, hour)
+            temperature = self.weather_model.get_temperature(month, hour, current_time=self.current_time)
             if hasattr(self.weather_model, 'get_humidity'):
-                humidity = self.weather_model.get_humidity(month, hour)
+                humidity = self.weather_model.get_humidity(month, hour, current_time=self.current_time)
             else:
                 humidity = self.weather_model.humidity if hasattr(self.weather_model, 'humidity') else 50.0
         else:
@@ -393,14 +593,14 @@ class SimulationEngine:
             temperature = 25.0  # Default comfortable temperature
             # Apply time-of-day variation for realism
             import math
-            time_effect = -5.0 * math.cos((hour - 14) * math.pi / 12)
+            time_effect = 5.0 * math.cos((hour - 14) * math.pi / 12)
             weather_effect = -2.0 if weather in ['rain', 'light_rain'] else 0.0
             temperature = 25.0 + time_effect + weather_effect
         
         # Retailers: process customers, check inventory
         for retailer in self.retailers:
             if hasattr(retailer, 'update'):
-                retailer.update(
+                ret_events = retailer.update(
                     self.current_time, 
                     self.time_step,
                     day_of_week, 
@@ -410,6 +610,10 @@ class SimulationEngine:
                     humidity,  # Pass humidity for consistency
                     engine=self  # Pass engine so retailers can schedule order events
                 )
+                # Feed sale/stockout events to AI manager
+                if ret_events:
+                    for event in ret_events:
+                        self._feed_ai_manager(event)
         
         # Warehouses: process orders, allocate trucks
         for warehouse in self.warehouses:
@@ -433,6 +637,8 @@ class SimulationEngine:
                             self.log_truck_telemetry(t_id, data)
                         else:
                             self.log_event(event['type'], event)
+                            # Feed AI manager with relevant events
+                            self._feed_ai_manager(event)
     
     def _update_environment(self):
         """Update environmental conditions (traffic, weather)."""
@@ -465,24 +671,25 @@ class SimulationEngine:
                             .field("month", month) \
                             .field("hour", hour)
                         self.influx_write_api.write(bucket=self.influx_bucket, record=point)
-                        logger.info(f"[WEATHER] Weather transition: {event.get('old_state')} → {event['new_state']}")
+                        logger.info(f"[WEATHER] Weather transition: {event.get('old_state')} ? {event['new_state']}")
                     except Exception as e:
                         logger.warning(f"InfluxDB weather write failed: {e}")
+                
+                # INTERNAL REACTIVE EVENT: Always notify agents regardless of InfluxDB state
+                if 'new_state' in event:
+                    self.event_bus.publish('weather_change', event)
             
-            # Update traffic model with current weather
+            # Update traffic model with current weather and month
             if self.traffic_model:
-                self.traffic_model.set_weather(self.weather_model.current_state)
+                self.traffic_model.set_environment(self.weather_model.current_state, month)
         
-        # Update traffic on road segments (OPTIMIZED: zone-based updates)
+        # Update traffic on all road segments with accident awareness
         if self.traffic_model and self.road_network:
-            # Collect all trucks from warehouses for zone detection
-            all_trucks = []
-            for warehouse in self.warehouses:
-                if hasattr(warehouse, 'trucks'):
-                    all_trucks.extend(warehouse.trucks)
-            
-            # Use smart zone-based update instead of updating all 210K segments
-            self.traffic_model.update_smart(self.road_network, all_trucks, self.current_time)
+            self.road_network.update_traffic(
+                self.traffic_model, self.current_time,
+                active_accidents=self.active_accidents,
+                trucks=self.all_trucks
+            )
     
     def _get_active_truck_segments(self) -> set:
         """
@@ -515,12 +722,7 @@ class SimulationEngine:
                     continue
                 
                 # Get truck's progress through route
-                if hasattr(truck, 'route_progress'):
-                    idx = truck.route_progress
-                elif hasattr(truck, 'current_segment_index'):
-                    idx = truck.current_segment_index
-                else:
-                    idx = 0  # Default to first segment
+                idx = getattr(truck, 'route_progress', 0)
                 
                 # Add current segment to active set
                 if 0 <= idx < len(segments):
@@ -543,7 +745,8 @@ class SimulationEngine:
                 self.road_network,
                 weather=self.weather_model.current_state,
                 time_step_minutes=self.time_step,
-                active_truck_segments=active_segments
+                active_truck_segments=active_segments,
+                active_trucks=self.all_trucks
             )
             
             # Clear expired accidents
@@ -556,7 +759,7 @@ class SimulationEngine:
                         segment.clear_accident()  # Use new method
                     accident.clear()
                     to_remove.append(accident)
-                    logger.info(f"✅ Accident {accident.accident_id} cleared on segment {accident.segment_id}")
+                    logger.info(f"[OK] Accident {accident.accident_id} cleared on segment {accident.segment_id}")
             
             for accident in to_remove:
                 self.active_accidents.remove(accident)
@@ -572,7 +775,7 @@ class SimulationEngine:
                     self.active_accidents.append(accident)
                     
                     # Log accident
-                    logger.warning(f"🚨 ACCIDENT on segment {accident.segment_id} "
+                    logger.warning(f"[ALERT] ACCIDENT on segment {accident.segment_id} "
                                  f"(severity={accident.severity}, duration={accident.duration_minutes:.0f}min, "
                                  f"speed_reduction={segment.accident_speed_reduction*100:.1f}%)")
                     
@@ -583,37 +786,142 @@ class SimulationEngine:
                         'duration_minutes': accident.duration_minutes,
                         'speed_reduction_percent': segment.accident_speed_reduction * 100
                     })
+                    
+                    # INTERNAL REACTIVE EVENT: Notify agents of road blockage
+                    self.event_bus.publish('accident_alert', {
+                        'segment_id': accident.segment_id,
+                        'severity': accident.severity,
+                        'location': segment.start_location
+                    })
 
-                # Schedule start event
-                start_event = AccidentStartEvent(
-                    time=accident.start_time,
-                    accident_id=accident.accident_id,
-                    segment_id=accident.segment_id,
-                    duration_minutes=accident.duration_minutes,
-                    severity=accident.severity
-                )
-                self.event_queue.schedule(start_event)
-                
-                # Schedule end event
-                end_event = AccidentEndEvent(
-                    time=accident.end_time,
-                    accident_id=accident.accident_id,
-                    segment_id=accident.segment_id
-                )
-                self.event_queue.schedule(end_event)
-                
-                # Track active accident
-                self.active_accidents.append(accident)
-                accident.activate()
+                # Track active accident (Already appended above if segment exists)
+                if not segment:
+                    self.active_accidents.append(accident)
+                    accident.activate()
     
+    def _feed_ai_manager(self, event: Dict[str, Any]):
+        """
+        Route simulation events to the AI manager for online learning.
+
+        Called for every discrete event generated by agents so the
+        prediction and optimization pods stay up-to-date.
+        """
+        if self.ai_manager is None:
+            return
+
+        etype = event.get('type', '')
+
+        # Demand signal: every sale feeds the demand forecaster
+        if etype == 'sale':
+            self.ai_manager.record_sale(
+                event.get('retailer_id', ''),
+                event.get('time', self.current_time),
+                event.get('quantity_kg', 0.0),
+            )
+
+        # Stockout signal: cross-agent sync
+        elif etype == 'stockout':
+            self.ai_manager.trigger_cross_agent_sync('stockout', event)
+
+        # RSL alert: cross-agent sync when cargo is critical
+        elif etype == 'cargo_spoiled':
+            self.ai_manager.trigger_cross_agent_sync('rsl_alert', {
+                'truck_id': event.get('truck_id'),
+                'current_rsl': 0.0,
+            })
+
+        # Market update (if market data events are ever emitted)
+        elif etype == 'market_update':
+            self.ai_manager.trigger_cross_agent_sync('market_update', event)
+
+        # Truck arrival: record actual travel time for ETA model training.
+        # We use cargo_kg as a proxy signal; the real segment-level data is
+        # recorded via record_segment_traversal() called from truck_agent when
+        # a segment is completed.  Here we log the delivery completion signal.
+        elif etype == 'truck_arrival':
+            logger.debug(
+                f"[AIManager] Truck {event.get('truck_id')} arrived at "
+                f"node {event.get('destination')} with {event.get('cargo_kg', 0):.1f}kg"
+            )
+
+        # Delivery complete: log for reward signal / analytics
+        elif etype == 'delivery_complete':
+            logger.debug(
+                f"[AIManager] Delivery complete: truck {event.get('truck_id')} "
+                f"? retailer {event.get('retailer_id')}, {event.get('quantity_kg', 0):.1f}kg"
+            )
+
+        # Warehouse batch spoiled: treat as RSL alert for cross-agent sync
+        elif etype == 'warehouse_batch_spoiled':
+            self.ai_manager.trigger_cross_agent_sync('rsl_alert', {
+                'truck_id': None,
+                'warehouse_id': event.get('warehouse_id'),
+                'current_rsl': 0.0,
+            })
+
+        # Truck destroyed: clear the retailer's pending_order so it can reorder
+        elif etype == 'truck_destroyed_cleanup':
+            order_id = event.get('order_id')
+            if order_id:
+                for retailer in self.retailers:
+                    if (retailer.pending_order is not None
+                            and retailer.pending_order.order_id == order_id):
+                        logger.warning(
+                            f"[CLEANUP] Clearing pending_order {order_id} "
+                            f"from {retailer.retailer_id} (truck destroyed)"
+                        )
+                        # Capture old order quantity before clearing state
+                        order_qty = retailer.pending_order.quantity_kg if retailer.pending_order else 0
+                        
+                        # Notify failure clears the state and tracks the metric
+                        retailer.notify_delivery_failed('truck_destroyed', self.current_time)
+                        
+                        # Now trigger the emergency replacement
+                        if order_qty > 0:
+                            retailer.trigger_emergency_reorder(order_qty, self.current_time, self)
+                        break
+
+        # Truck departure: record as ETA training baseline
+        elif etype == 'truck_departure':
+            logger.debug(
+                f"[AIManager] Truck {event.get('truck_id')} departed with "
+                f"{event.get('cargo_kg', 0):.1f}kg, route_segments={event.get('route_segments', 0)}"
+            )
+
+        # Dispatch blocked due to low RSL: feed as RSL alert
+        elif etype == 'dispatch_blocked_low_rsl':
+            self.ai_manager.trigger_cross_agent_sync('rsl_alert', {
+                'truck_id': None,
+                'warehouse_id': event.get('warehouse_id'),
+                'current_rsl': 0.0,
+                'reason': 'dispatch_blocked',
+            })
+
+        # Delivery received at retailer: confirm demand was met
+        elif etype == 'delivery_received':
+            logger.debug(
+                f"[AIManager] Delivery received at {event.get('retailer_id')}: "
+                f"{event.get('quantity_kg', 0):.1f}kg"
+            )
+
     def _handle_logging(self):
         """Handle 3-tier logging strategy."""
+        if self.headless:
+            # In headless mode, only CSV snapshot logging runs (no InfluxDB/MQTT)
+            if self.headless_log_enabled:
+                if self.current_time - self.last_snapshot_time >= self.time_step:
+                    self._log_snapshots_csv()
+                    self.last_snapshot_time = self.current_time
+            return
+            
         # Snapshots: every timestep (synchronized with simulation loop)
         if self.current_time - self.last_snapshot_time >= self.time_step:
             self._log_snapshots()
             self.last_snapshot_time = self.current_time
         
-        # Telemetry: handled by individual truck agents
+        # Telemetry: Flush buffer
+        self._flush_telemetry()
+        
         # Events: logged immediately when they occur
     
     def _log_startup_parameters(self):
@@ -628,12 +936,13 @@ class SimulationEngine:
                 'random_seed': self.random_seed,
                 'num_warehouses': len(self.warehouses),
                 'num_retailers': len(self.retailers),
-                'num_trucks': len(self.trucks)
+                'num_trucks': len(self.all_trucks)
             }
             self.mqtt_client.publish('iot/simulation/events', payload)
         
         # Write directly to InfluxDB
         if self.influx_connected:
+            start_date_str = self.sim_start_datetime.strftime("%Y-%m-%d")
             point = Point("simulation_metadata") \
                 .tag("run_id", self.run_id) \
                 .tag("event_type", "simulation_start") \
@@ -643,7 +952,8 @@ class SimulationEngine:
                 .field("random_seed", self.random_seed if self.random_seed else 0) \
                 .field("num_warehouses", len(self.warehouses)) \
                 .field("num_retailers", len(self.retailers)) \
-                .field("num_trucks", len(self.trucks))
+                .field("num_trucks", len(self.all_trucks)) \
+                .field("start_date", start_date_str)
                 # No .time() - let InfluxDB use current wall-clock time
             try:
                 self.influx_write_api.write(bucket=self.influx_bucket, record=point)
@@ -711,12 +1021,16 @@ class SimulationEngine:
                     try:
                         point = Point("retailer_state") \
                             .tag("run_id", self.run_id) \
-                            .tag("retailer_id", state['retailer_id']) \
-                            .tag("warehouse_id", state.get('warehouse_id', ''))
+                            .tag("retailer_id", state['retailer_id'])
+                        
+                        # Tag the primary warehouse (first in subscription list)
+                        warehouse_ids = state.get('warehouse_ids', [])
+                        if warehouse_ids:
+                            point = point.tag("primary_warehouse_id", warehouse_ids[0])
                         
                         # Add all numeric fields (exclude pending_order which is boolean)
                         for key, value in state.items():
-                            if key not in ['retailer_id', 'warehouse_id', 'location', 'pending_order'] and isinstance(value, (int, float)):
+                            if key not in ['retailer_id', 'warehouse_ids', 'location', 'pending_order'] and isinstance(value, (int, float)):
                                 point = point.field(key, float(value))
                         
                         # Add pending_order as numeric (0 or 1)
@@ -735,10 +1049,11 @@ class SimulationEngine:
                     except Exception as e:
                         logger.warning(f"Failed to create retailer point: {e}")
         
-        # Truck snapshots
-        for truck in self.trucks:
-            if hasattr(truck, 'get_state'):
-                state = truck.get_state()
+        # Truck snapshots - use TruckAgent.get_state() for richer sensor data
+        for warehouse in self.warehouses:
+            for agent in warehouse.truck_agents.values():
+                truck = agent.truck
+                state = agent.get_state()  # Use TruckAgent for richer sensor/driver data
                 
                 # Publish to MQTT
                 if self.mqtt_connected:
@@ -754,25 +1069,19 @@ class SimulationEngine:
                             .tag("run_id", self.run_id) \
                             .tag("truck_id", state['truck_id']) \
                             .tag("warehouse_id", state.get('warehouse_id', '')) \
-                            .tag("truck_type", state.get('truck_type', ''))
+                            .tag("truck_type", state.get('truck_type', '')) \
+                            .tag("current_zone", str(state.get('current_zone', 'unknown')))
                         
                         # Convert status to numeric enum for InfluxDB compatibility
                         # String fields cause type conflicts in pivot() operations
                         if 'status' in state:
-                            status_map = {
-                                'idle': 0.0,
-                                'in_transit': 1.0,
-                                'loading': 2.0,
-                                'unloading': 3.0,
-                                'refueling': 4.0,
-                                'maintenance': 5.0
-                            }
-                            status_numeric = status_map.get(state['status'], -1.0)
+                            status_numeric = self.status_codes.get(state['status'], -1.0)
                             point = point.field("status_code", status_numeric)
                         
                         # Add all numeric fields
                         for key, value in state.items():
-                            if key not in ['truck_id', 'warehouse_id', 'truck_type', 'status', 'location'] \
+                            if key not in ['truck_id', 'warehouse_id', 'truck_type', 'status',
+                                           'location', 'latitude', 'longitude'] \
                                and isinstance(value, (int, float)):
                                 point = point.field(key, float(value))
                         
@@ -798,8 +1107,8 @@ class SimulationEngine:
                 
                 # Get current weather state and environmental data
                 weather_state = self.weather_model.current_state
-                temperature = self.weather_model.get_temperature(month, hour)
-                humidity = self.weather_model.get_humidity(month, hour)
+                temperature = self.weather_model.get_temperature(month, hour, current_time=self.current_time)
+                humidity = self.weather_model.get_humidity(month, hour, current_time=self.current_time)
                 
                 # Create weather snapshot point
                 point = Point("weather_state") \
@@ -835,8 +1144,33 @@ class SimulationEngine:
                 # Unexpected errors
                 logger.warning(f"InfluxDB async write queue failed (unexpected): {type(e).__name__}: {e}")
     
+    def _log_snapshots_csv(self):
+        """Write periodic state snapshots to CSV in headless mode."""
+        import csv
+        if not hasattr(self, 'telemetry_csv_path'):
+            return
+        try:
+            with open(self.telemetry_csv_path, 'a', newline='') as f:
+                writer = csv.writer(f)
+                for warehouse in self.warehouses:
+                    for agent in warehouse.truck_agents.values():
+                        truck = agent.truck
+                        sc = self.status_codes.get(truck.status, -1.0)
+                        lat, lon = truck.current_location if truck.current_location else (0.0, 0.0)
+                        avg_rsl = (sum(b.current_rsl for b in truck.cargo_batches) / len(truck.cargo_batches)
+                                   if truck.cargo_batches else 100.0)
+                        writer.writerow([
+                            self.current_time, 'truck', truck.truck_id,
+                            sc, round(truck.get_fuel_percentage(), 1),
+                            round(avg_rsl, 1), round(lat, 6), round(lon, 6)
+                        ])
+        except Exception as e:
+            logger.debug(f"CSV snapshot write failed: {e}")
+
     def _cleanup(self):
-        """Cleanup resources at end of simulation."""
+        # Shutdown AI manager (saves RL checkpoint)
+        if self.ai_manager is not None:
+            self.ai_manager.shutdown()
         # CRITICAL: Write simulation_end event BEFORE closing writer
         if self.mqtt_connected:
             # Log simulation end event
@@ -963,6 +1297,16 @@ class SimulationEngine:
             except Exception as e:
                 # Unexpected errors
                 logger.warning(f"InfluxDB event write failed (unexpected) for {event_type}: {type(e).__name__}: {e}")
+                
+        # Headless CSV fallback
+        if self.headless_log_enabled:
+            import csv, json
+            try:
+                with open(self.event_csv_path, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([self.current_time, event_type, json.dumps(data)])
+            except Exception as e:
+                 logger.debug(f"CSV Event log failed: {e}")
     
     def log_truck_telemetry(self, truck_id: str, telemetry_data: Dict[str, Any]):
         """
@@ -985,9 +1329,12 @@ class SimulationEngine:
             }
             self.mqtt_client.publish('iot/truck/telemetry', payload)
         
-        # Write to InfluxDB (for dashboard)
+        # Write to InfluxDB (Buffered)
         if self.influx_connected:
             try:
+                # Map status to code using consolidated map
+                status_code = self.status_codes.get(telemetry_data.get('status', 'idle'), -1.0)
+                
                 point = Point("truck_telemetry") \
                     .tag("run_id", self.run_id) \
                     .tag("truck_id", truck_id)
@@ -1002,7 +1349,7 @@ class SimulationEngine:
                         continue  # Skip None and complex types
                     elif isinstance(value, str):
                         # Skip string fields except status (already tagged)
-                        if key != 'status' and key != 'driver_status' and key != 'source':
+                        if key not in ['status', 'driver_status', 'source']:
                             continue
                     elif isinstance(value, bool):
                         point = point.field(key, float(1 if value else 0))
@@ -1021,32 +1368,23 @@ class SimulationEngine:
                     point = point.field("longitude_true", float(lon))
                 
                 # Add timestamp
-                point = point.field("sim_time", float(self.current_time))
+                point = point.field("timestamp", float(self.current_time))
                 
-                self.influx_write_api.write(bucket=self.influx_bucket, record=point)
-                logger.debug(f"InfluxDB: Wrote telemetry for {truck_id}")
-            except (ConnectionError, TimeoutError) as e:
-                # Network/connection issues
-                logger.warning(f"InfluxDB telemetry write failed (connection) for {truck_id}: {e}")
-            except (ValueError, TypeError) as e:
-                # Data validation errors
-                logger.warning(f"InfluxDB telemetry write failed (invalid data) for {truck_id}: {e}")
+                self._telemetry_buffer.append(point)
             except Exception as e:
                 # Unexpected errors
-                logger.warning(f"InfluxDB telemetry write failed (unexpected) for {truck_id}: {type(e).__name__}: {e}")
-    
-    def _write_snapshot_to_influxdb(self, snapshot_data: Dict[str, Any], current_time: float):
-        """
-        Write complete simulation snapshot to InfluxDB.
-        
-        Args:
-            snapshot_data: Dictionary containing all snapshot data
-            current_time: Current simulation time
-        """
-        if not self.mqtt_connected:
-            logger.warning(f"Cannot write snapshot to InfluxDB at time {current_time:.1f}min - disconnected")
-            logger.warning("Data loss risk! Check InfluxDB connection.")
-            return
+                logger.warning(f"InfluxDB telemetry buffering failed for {truck_id}: {type(e).__name__}: {e}")
+
+    def _flush_telemetry(self):
+        """Flush buffered telemetry to InfluxDB in a single batch."""
+        if self.influx_connected and self._telemetry_buffer:
+            try:
+                count = len(self._telemetry_buffer)
+                self.influx_write_api.write(bucket=self.influx_bucket, record=self._telemetry_buffer)
+                self._telemetry_buffer.clear()
+                logger.debug(f"Flushed {count} telemetry points to InfluxDB")
+            except Exception as e:
+                logger.warning(f"Failed to flush telemetry buffer: {e}")
     
     def get_state(self) -> Dict[str, Any]:
         """
@@ -1061,7 +1399,11 @@ class SimulationEngine:
             'current_time_formatted': self._format_time(self.current_time),
             'warehouses': [w.get_state() for w in self.warehouses if hasattr(w, 'get_state')],
             'retailers': [r.get_state() for r in self.retailers if hasattr(r, 'get_state')],
-            'trucks': [t.get_state() for t in self.trucks if hasattr(t, 'get_state')]
+            'trucks': [
+                agent.get_state()
+                for wh in self.warehouses
+                for agent in wh.truck_agents.values()
+            ]
         }
     
     def _format_time(self, minutes: float) -> str:
@@ -1125,5 +1467,7 @@ def parse_arguments():
         default=None,
         help='Simulation speed multiplier (e.g. 1.0 = real-time, 10.0 = 10x speed). If not set, runs max speed.'
     )
+    parser.add_argument('--steps', type=int, default=None, help='Exact number of simulation steps to run')
+    parser.add_argument('--headless', action='store_true', help='Run without MQTT/Influx logging or speed limit')
     
     return parser.parse_args()

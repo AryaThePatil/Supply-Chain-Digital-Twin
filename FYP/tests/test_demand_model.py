@@ -2,7 +2,7 @@
 
 import pytest
 import random
-from src.simulation.models.demand_model import DemandModel
+from src.simulation.business_models import DemandModel
 
 
 @pytest.fixture

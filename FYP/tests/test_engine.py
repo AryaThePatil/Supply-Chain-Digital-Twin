@@ -132,11 +132,12 @@ def test_engine_mqtt_client_initialized(test_config):
 
 
 def test_engine_logging_intervals(test_config):
-    """Test that logging intervals are set correctly."""
+    """Test that logging state is initialized correctly."""
     engine = SimulationEngine(config=test_config)
-    
-    assert engine.snapshot_interval == test_config['logging']['snapshot_interval_minutes']
-    assert engine.telemetry_interval == test_config['logging']['telemetry_interval_minutes']
+    # Verify logging infrastructure is set up
+    assert hasattr(engine, 'last_snapshot_time')
+    assert hasattr(engine, 'headless_log_enabled')
+    assert engine.last_snapshot_time == 0
 
 
 if __name__ == '__main__':

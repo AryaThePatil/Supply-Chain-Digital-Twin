@@ -1,0 +1,12 @@
+FINAL OPTIMIZED BENCHMARK RESULTS: Baseline vs Final RL (PPO)
+====================================================================
+Metric                           Baseline            RL       Delta  Verdict
+Service Level (%)                   99.1%         99.9%        +0.8%  BETTER
+Orders Fulfilled                 6,855.0      7,178.0      +323.0  BETTER
+Kg Delivered                 16,270,753.4 kg  16,745,461.2 kg  +474,707.8 kg  BETTER
+Avg Cargo RSL (%)                   99.7%         99.7%        +0.0%  BETTER
+Avg Fuel Level (%)                  78.7%         78.7%        +0.0%  BETTER
+Stockouts                       70,898.0     33,401.0   -37,497.0  BETTER
+Road Accidents                   2,212.0      2,077.0      -135.0  BETTER
+Warehouse Restocks               2,938.0      3,048.0      +110.0  BETTER
+====================================================================

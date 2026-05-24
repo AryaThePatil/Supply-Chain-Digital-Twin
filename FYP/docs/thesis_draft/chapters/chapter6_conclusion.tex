@@ -1,0 +1,78 @@
+% ============================================================
+%  CHAPTER 6: CONCLUSION AND FUTURE WORK
+% ============================================================
+\chapter{Conclusion and Future Work}
+
+This project proposed, implemented, and validated a Supply Chain Digital Twin for
+the city of Nagpur, designed to address the problem of dynamic multi-objective
+fleet routing under real-time constraints. The system combined a discrete-event
+simulation engine with a three-tier AI architecture consisting of a Central PPO
+Brain for macro-level strategy selection, per-truck Edge Q-Learning Agents for
+emergency micro-rerouting, and an online Ridge Regression ETA Forecaster for
+spatial-temporal travel time prediction.
+
+The 365-day benchmark validated the system against a heuristic A* baseline under
+identical conditions. The AI-enabled system fulfilled 323 additional orders,
+delivered 474,708 more kilograms of cargo, and reduced retailer stockout events by
+52.9\%, from 70,898 to 33,401. These improvements were achieved without any
+degradation in cargo freshness or fuel efficiency, which were maintained at 99.7\%
+and 78.7\% respectively in both configurations. Additionally, road accidents
+reduced by 135 events as an emergent consequence of the ETA Forecaster learning
+to route trucks away from high-accident zones during peak hours.
+
+The reward normalization framework, which established a 5:1 freshness-to-fuel
+penalty ratio to equalize the physical magnitudes of the two competing objectives,
+was critical to enabling the PPO agent to learn balanced, context-sensitive
+strategies. Without this normalization, the agent defaulted entirely to
+fuel-conservative behavior and failed to exploit RSL-Priority and Speed-Priority
+routing opportunities. The Anti-Thrashing GPS Lock was equally critical: before
+this fix was applied, the fleet delivery rate collapsed to 49.8\% due to
+continuous route recalculation. These two engineering contributions are not merely
+implementation details; they represent fundamental design decisions that determine
+whether the RL approach succeeds or fails in a real logistics deployment.
+
+The results demonstrate that Pareto optimality is achievable in multi-objective
+supply chain routing through reinforcement learning. An intelligent agent can
+simultaneously improve throughput, supply continuity, and road safety without
+requiring any explicit trade-offs between these objectives, provided that the
+reward function is carefully designed and normalized to reflect the physical
+realities of the operational environment.
+
+% ================================================================
+\section{Future Work}
+
+Several extensions and improvements to the current system are identified for
+future work.
+
+\begin{enumerate}
+    \item \textbf{Real-Time IoT Data Integration:} The current simulation relies on
+    synthetic traffic and weather data. Connecting the Digital Twin to live IoT
+    sensor streams from Nagpur's traffic management infrastructure, including
+    inductive loop detectors and weather stations, would allow the ETA Forecaster
+    to train on real-world data and produce more accurate travel time predictions.
+
+    \item \textbf{Multi-Seed Statistical Validation:} The 365-day benchmark was
+    conducted on a single fixed random seed (seed=42) for reproducibility. Running
+    the benchmark across a set of 5 to 10 different seeds would produce mean and
+    standard deviation estimates for each performance metric, providing a statistically
+    rigorous basis for the claims made in this thesis.
+
+    \item \textbf{Testing Diverse Perishables:} The current simulation focuses
+    exclusively on a single perishable product profile (oranges) with a fixed
+    decay rate. Future iterations should test the AI against a diverse mix of
+    goods, such as pharmaceuticals, dairy, and frozen foods, each requiring
+    distinct temperature profiles and varying Remaining Shelf Life (RSL)
+    sensitivities.
+
+    \item \textbf{Intercity Travel and Cold Storage Logistics:} Extending the
+    Nagpur city graph to include intercity highway networks and regional cold
+    storage hubs. This would allow the reinforcement learning architecture to
+    optimize long-haul logistics and manage the energy consumption of
+    refrigerated containers over multi-day journeys.
+
+    \item \textbf{Deep RL for the Edge Agent:} The Edge Agent currently uses a
+    small tabular Q-table that requires manual discretization of the local hazard
+    state space. Replacing this with a Deep Q-Network would allow the Edge Agent
+    to generalize across new intersection configurations and hazard types that were
+    not encountered during training, improving its adaptability in deployment.
+\end{enumerate}

@@ -102,7 +102,7 @@ def sample_retailer_config():
 @pytest.fixture
 def fresh_orange_batch():
     """Create a fresh orange batch for testing."""
-    from simulation.entities.orange_batch import OrangeBatch
+    from simulation.entities import OrangeBatch
     return OrangeBatch(
         batch_id='TEST_BATCH_001',
         quantity=1000.0,
@@ -113,7 +113,7 @@ def fresh_orange_batch():
 @pytest.fixture
 def aged_orange_batch():
     """Create an aged orange batch for spoilage testing."""
-    from simulation.entities.orange_batch import OrangeBatch
+    from simulation.entities import OrangeBatch
     batch = OrangeBatch(
         batch_id='TEST_BATCH_002',
         quantity=500.0,

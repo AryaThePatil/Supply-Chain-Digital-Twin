@@ -1,0 +1,4 @@
+# file: C:\Users\aryap\OneDrive\Desktop\Arya_College\FYP_Dynamic\FYP\src\data\config_loader.py
+# hypothesis_version: 6.151.10
+
+[365, 'bounding_box', 'capacity_kg', 'cargo', 'cost_per_liter', 'count', 'disruptions', 'duration_days', 'fleet', 'fuel_tank_liters', 'id', 'initial_inventory_kg', 'large', 'lat', 'location', 'logging', 'lon', 'max_speed_kmh', 'medium', 'name', 'r', 'restock_schedule', 'retailers', 'simulation', 'small', 'time_step_minutes', 'traffic', 'truck_types', 'type', 'warehouses']

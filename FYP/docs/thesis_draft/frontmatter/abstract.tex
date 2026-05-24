@@ -1,0 +1,35 @@
+% ============================================================
+%  ABSTRACT
+%  Per Prof. [RK1]: include work done AND specific results
+% ============================================================
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+Supply chain management in urban logistics networks faces a fundamental challenge:
+delivery fleets must satisfy multiple competing objectives simultaneously, including
+minimizing fuel costs, preserving cargo freshness, maximizing delivery speed, and
+avoiding unsafe road conditions. Traditional route planning algorithms such as A*
+use a single fixed cost function and cannot adapt dynamically to real-time events
+like road accidents, extreme weather, or sudden demand spikes. This project addresses
+this limitation by designing and implementing a Supply Chain Digital Twin for the
+city of Nagpur, validated over a full 365-day simulation.
+
+The system is built around a three-tier AI architecture. The first tier is a Central
+PPO (Proximal Policy Optimization) Brain, trained for 50,000 steps to select
+macro-level routing strategies from three options: Fuel-Priority, RSL-Priority, and
+Speed-Priority. The second tier is a per-truck Edge Q-Learning Agent that performs
+real-time emergency micro-rerouting when accidents or weather events block the
+planned route. The third tier is an online Ridge Regression ETA Forecaster that
+predicts segment travel times using an 8-dimensional spatial-temporal feature vector
+and updates itself continuously throughout the simulation.
+
+The system was evaluated through a 365-day comparative benchmark against a
+heuristic A* baseline. The AI-enabled configuration fulfilled 323 additional orders,
+delivered 474,708 more kilograms of cargo, and reduced retailer stockout events from
+70,898 to 33,401, a reduction of 52.9\%. Road accidents were reduced by 135 events
+as an emergent consequence of the ETA Forecaster learning to route trucks away from
+high-risk zones during peak hours. Cargo freshness at delivery and fleet fuel
+efficiency were identical in both configurations, at 99.7\% and 78.7\% respectively,
+confirming that the throughput gains were achieved without any trade-off in quality
+or operational cost. The results demonstrate Pareto optimality: six of eight
+performance metrics improved simultaneously, and no metric regressed.

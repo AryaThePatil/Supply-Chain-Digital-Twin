@@ -1,0 +1,4 @@
+# file: C:\Users\aryap\OneDrive\Desktop\Arya_College\FYP_Dynamic\FYP\src\simulation\network\router.py
+# hypothesis_version: 6.151.10
+
+[0.0, 0.1, 0.5, 1.0, 2.0, 5.0, 6371.0, 100, 'base_weight', 'cache_enabled', 'cache_ttl_minutes', 'cached_at', 'cost_weights', 'distance_km', 'fuel_liters', 'inf', 'length', 'medium', 'node_id', 'nodes', 'retailer', 'road_quality', 'route', 'routing', 'segment_id', 'segment_objects', 'segments', 'time_minutes', 'total_cost', 'total_distance_km', 'total_fuel_liters', 'total_time_minutes', 'traffic_model', 'warehouse']

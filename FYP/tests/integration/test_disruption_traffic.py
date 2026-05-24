@@ -5,7 +5,7 @@ traffic flow and segment blocking.
 """
 import pytest
 from unittest.mock import Mock
-from src.simulation.models.disruption_model import DisruptionModel
+from src.simulation.environment_models import DisruptionModel
 
 
 @pytest.fixture

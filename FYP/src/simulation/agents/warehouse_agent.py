@@ -1,11 +1,16 @@
 """WarehouseAgent - Autonomous agent for warehouse operations."""
 
 import logging
+import datetime
 from typing import List, Dict, Optional, Tuple
-from ..entities.truck import Truck, TruckType
-from ..entities.order import Order
-from ..entities.orange_batch import OrangeBatch
+from ..entities import Truck, TruckType
+from ..entities import Order
+from ..entities import OrangeBatch
+from ..network.road_network import RoadNetwork
+from ..sensor import GPSSensor, TemperatureSensor, StockSensor
+import numpy as np
 from .truck_agent import TruckAgent
+from ..business_models import InventoryModel
 
 # Module-level logger
 logger = logging.getLogger(__name__)
@@ -26,7 +31,7 @@ class WarehouseAgent:
     def __init__(self, warehouse_id: str, location: Tuple[float, float],
                  initial_inventory_kg: float, fleet_config: List[Dict],
                  truck_types: Dict[str, TruckType], road_network, router, config: Dict,
-                 restock_schedule: Dict = None):
+                 restock_schedule: Dict = None, event_bus=None, ai_manager=None):
         """
         Initialize WarehouseAgent.
         
@@ -40,12 +45,16 @@ class WarehouseAgent:
             router: Router instance
             config: Configuration dict
             restock_schedule: Optional dict with restock schedule (day_of_week, time_of_day, quantity_kg)
+            event_bus: Optional EventBus for reactive internal communication
+            ai_manager: Optional AIManager for AI/ML integration
         """
         self.warehouse_id = warehouse_id
         self.location = location
         self.current_inventory_kg = initial_inventory_kg
         self.restock_schedule = restock_schedule  # Store restock schedule
         self.config = config  # Store config for later use
+        self.event_bus = event_bus      # Reactive pub/sub bus
+        self.ai_manager = ai_manager    # AI/ML ecosystem manager
         
         # Find warehouse node in road network
         self.node_id = road_network.get_nearest_node(location[0], location[1])
@@ -66,7 +75,8 @@ class WarehouseAgent:
                 truck.current_node = self.node_id
                 
                 # Create agent for this truck
-                agent = TruckAgent(truck, road_network, router, config)
+                agent = TruckAgent(truck, road_network, router, config,
+                                   ai_manager=ai_manager, event_bus=event_bus)
                 
                 self.trucks.append(truck)
                 self.truck_agents[truck_id] = agent
@@ -87,68 +97,147 @@ class WarehouseAgent:
         self.total_kg_shipped = 0.0
         self.inventory_shortages = 0
 
-        # Dynamic Restocking (New Logic)
-        self.reorder_point = config.get('warehouse', {}).get('reorder_point_kg', 5000.0)
-        self.restock_amount = config.get('warehouse', {}).get('restock_amount_kg', 20000.0)
-        self.restock_lead_time_minutes = config.get('warehouse', {}).get('restock_lead_time_minutes', 24 * 60) # 24 hours
+        # AI-Driven Inventory Management
+        # Reads from config['warehouse']['inventory_management'] — all keys must match
+        # InventoryModel.__init__ exactly.  Falls back to safe defaults if section missing.
+        inv_config = config.get('warehouse', {}).get('inventory_management', {
+            'service_level': 0.95,
+            'lead_time_days_mean': 1.0,
+            'lead_time_days_std': 0.2,
+            'review_period_hours': 24.0,
+            'order_quantity_method': 'EOQ',
+            'holding_cost_per_kg_per_day': 0.05,
+            'ordering_cost_per_order': 50,
+            'order_up_to_days': 14,
+            'demand_forecast_window_days': 7,
+            'demand_smoothing_alpha': 0.3,
+            'min_order_quantity_kg': 5000,
+            'max_order_quantity_kg': 50000,
+        })
+        self.inventory_model = InventoryModel(inv_config)
         self.pending_restock = False
+        
+        # IoT Sensors (NEW - Phase 3)
+        sensor_cfg = config.get('sensors', {})
+        self.temp_sensor = TemperatureSensor(f"{warehouse_id}_temp", sensor_cfg)
+        self.stock_sensor = StockSensor(f"{warehouse_id}_stock", sensor_cfg)
+        self._perceived_inventory_kg = initial_inventory_kg
+        
+        # Capacity enforcement - set after construction via warehouse.max_capacity_kg = wh_config['max_capacity_kg']
+        # Defaults to 2x initial inventory as a safe fallback
+        self.max_capacity_kg = initial_inventory_kg * 2.0
         
         # OPTIMIZATION 8: Event-driven order processing
         self.pending_orders_changed = False  # Flag: new orders added
         self.trucks_changed = False  # Flag: truck returned/became available
         
+        # Environmental state (NEW - for dispatch prediction)
+        self._current_temperature = 25.0
+        self._current_humidity = 50.0
+        self._current_weather = 'clear'
+
+        # Subscribe to EventBus for reactive responses
+        if event_bus is not None:
+            event_bus.subscribe('accident_alert', self._on_accident_alert)
+
+    def _on_accident_alert(self, data: dict):
+        """
+        React to an accident alert.
+
+        If any of our in-transit trucks are on the affected segment,
+        flag trucks_changed so the allocation loop re-evaluates on the
+        next update cycle.  The individual TruckAgent will handle the
+        actual reroute via its own EventBus subscription.
+        """
+        affected_segment = data.get('segment_id')
+        if not affected_segment:
+            return
+        for truck in self.trucks:
+            if truck.status != 'in_transit' or not truck.current_route:
+                continue
+            segments = truck.current_route.get('segments', [])
+            remaining = segments[truck.route_progress:]
+            if affected_segment in remaining:
+                logger.info(
+                    f"[EVENTBUS] Warehouse {self.warehouse_id}: truck {truck.truck_id} "
+                    f"affected by accident on segment {affected_segment}."
+                )
+                # Flag re-evaluation so the allocation loop can reassign
+                # any idle trucks to cover for the delayed one
+                self.trucks_changed = True
+                break
+        
     def _initialize_inventory_batches(self, total_kg: float):
-        """Create initial inventory as batches."""
-        import datetime
+        """Create initial inventory as batches.
+
+        Harvest dates are set to the simulation epoch (datetime(2000, 1, 1)) so
+        that RSL tracking is consistent with simulation time rather than
+        wall-clock time.  FIFO ordering still works correctly because all
+        initial batches share the same epoch date and are therefore treated as
+        equally 'old'.
+        """
         # Get batch size from config (moved from hardcoded 1000)
         batch_size = self.config.get('warehouse_operations', {}).get('batch_size_kg', 1000)
         num_batches = int(total_kg / batch_size)
         remainder = total_kg % batch_size
-        
+
+        # Simulation-epoch sentinel: consistent, sortable, not wall-clock time
+        epoch_date = datetime.datetime(2000, 1, 1)
+
         for i in range(num_batches):
             batch = OrangeBatch(
                 f"{self.warehouse_id}_batch_{self.batch_counter:04d}",
                 batch_size,
-                datetime.datetime.now(),
+                epoch_date,
+                0.0,
                 100.0
             )
             self.inventory_batches.append(batch)
             self.batch_counter += 1
-        
+
         if remainder > 0:
             batch = OrangeBatch(
                 f"{self.warehouse_id}_batch_{self.batch_counter:04d}",
                 remainder,
-                datetime.datetime.now(),
+                epoch_date,
+                0.0,
                 100.0
             )
             self.inventory_batches.append(batch)
             self.batch_counter += 1
     
+    def _recalculate_inventory(self):
+        """Recalculate current_inventory_kg from inventory_batches to stay consistent."""
+        self.current_inventory_kg = sum(b.quantity for b in self.inventory_batches)
+
     def update(self, current_time: float, time_step: float, ambient_temperature: float = 25.0, ambient_humidity: float = 50.0, current_weather: str = 'clear', engine=None) -> List[Dict]:
         """
         Update warehouse state for one time step.
-        
-        Args:
-            current_time: Current simulation time in minutes
-            time_step: Time step duration in minutes
-            ambient_temperature: Current ambient temperature in Celsius
-            ambient_humidity: Current relative humidity (%)
-            current_weather: Current weather state
-            engine: SimulationEngine instance (for accessing retailers)
-            
-        Returns:
-            List of events generated during update
         """
         events = []
+
+        # Store current environmental conditions for use in dispatch RSL prediction
+        self._current_temperature = ambient_temperature
+        self._current_humidity = ambient_humidity
+        self._current_weather = current_weather
         
         # CRITICAL FIX: Update RSL for warehouse inventory in cold storage
         # Standard citrus cold storage: 6°C, 85-90% RH
-        WAREHOUSE_STORAGE_TEMP = 6.0  # Celsius
+        # Phase 3 FIX: Use noisy sensor data for physics input
+        GROUND_TRUTH_TEMP = 6.0  # Celsius
         WAREHOUSE_STORAGE_HUMIDITY = 88.0  # Percent
         
+        reading = self.temp_sensor.read(GROUND_TRUTH_TEMP, current_time)
+        # Use sensor reading if available, else last known good value (handling packet loss)
+        perceived_temp = reading if reading is not None else getattr(self.temp_sensor, 'last_reading', GROUND_TRUTH_TEMP)
+        if perceived_temp is None: perceived_temp = GROUND_TRUTH_TEMP
+
         for batch in self.inventory_batches:
-            batch.update_rsl(WAREHOUSE_STORAGE_TEMP, WAREHOUSE_STORAGE_HUMIDITY, current_time)
+            # SCIENTIFIC FIX: Reality spoilage depends on actual physics (Ground Truth).
+            # Sensor noise is handled separately for model perception.
+            # Stationary warehouse inventory has 0.0 vibration.
+            batch.update_rsl(GROUND_TRUTH_TEMP, WAREHOUSE_STORAGE_HUMIDITY, current_time, vibration_g=0.0)
+
             
             # Check for spoiled batches
             if batch.is_spoiled():
@@ -162,18 +251,43 @@ class WarehouseAgent:
         
         # Calculate spoilage BEFORE removing from list
         spoiled_kg = sum(b.quantity for b in self.inventory_batches if b.is_spoiled())
-        if spoiled_kg > 0:
-            self.current_inventory_kg = max(0, self.current_inventory_kg - spoiled_kg)
         
         # Then remove spoiled batches from inventory
         self.inventory_batches = [b for b in self.inventory_batches if not b.is_spoiled()]
+        
+        # Recalculate inventory from batch list (single source of truth — no manual subtraction)
+        self._recalculate_inventory()
+        
+        # Sync perceived inventory after spoilage so dispatch logic stays accurate
+        if spoiled_kg > 0:
+            self._perceived_inventory_kg = max(0.0, self._perceived_inventory_kg - spoiled_kg)
+
+        # Update perceived inventory from IoT weight sensors
+        stock_reading = self.stock_sensor.read(self.current_inventory_kg, current_time)
+        if stock_reading is not None:
+            self._perceived_inventory_kg = stock_reading
         
         # Update all truck agents
         for agent in self.truck_agents.values():
             truck_events = agent.update(current_time, time_step, ambient_temperature, ambient_humidity, current_weather)
             events.extend(truck_events)
-            
-            # Handle truck arrivals
+
+            # Handle truck destruction cleanup
+            for ev in truck_events:
+                if ev.get('type') == 'truck_destroyed_cleanup':
+                    order_id = ev.get('order_id')
+                    if order_id and order_id in self.active_orders:
+                        order = self.active_orders[order_id]
+                        order.status = 'failed_truck_destroyed'
+                        self.completed_orders.append(order)
+                        del self.active_orders[order_id]
+                        logger.warning(
+                            f"[CLEANUP] Order {order_id} removed from active_orders "
+                            f"(truck {ev.get('truck_id')} destroyed)"
+                        )
+                    # Also flag trucks_changed so pending orders get re-allocated
+                    self.trucks_changed = True
+
             # Handle truck arrivals
             if agent.truck.status == "arrived":
                 if agent.truck.destination_node == self.node_id:
@@ -201,19 +315,31 @@ class WarehouseAgent:
             self.pending_orders_changed = False
             self.trucks_changed = False
             
-        # Check for dynamic restocking
-        if self.current_inventory_kg <= self.reorder_point and not self.pending_restock:
+        # SCIENTIFIC FIX: Check for reorder using AI-driven InventoryModel
+        # Phase 3 FIX: Use perceived inventory (noisy) instead of ground truth
+        if self.inventory_model.should_reorder(self._perceived_inventory_kg) and not self.pending_restock:
             self.pending_restock = True
             
-            # Schedule restocking event
-            if engine:
-                from ..events.event_types import WarehouseRestockEvent
-                restock_time = current_time + self.restock_lead_time_minutes
+            # Calculate dynamic order quantity based on predicted demand
+            restock_amount = self.inventory_model.calculate_order_quantity(self._perceived_inventory_kg)
+
+            # CAP to physical shelf space — never order more than the building can hold
+            available_space = self.max_capacity_kg - self.current_inventory_kg
+            restock_amount = min(restock_amount, available_space)
+
+            if restock_amount <= 0:
+                self.pending_restock = False  # Already full, no point ordering
+            elif engine:
+                from ..events import WarehouseRestockEvent
+                # Lead time from model (minutes)
+                lead_time = self.inventory_model.lead_time_mean
+                restock_time = current_time + lead_time
+                
                 event = WarehouseRestockEvent(
                     time=restock_time,
                     warehouse_id=self.warehouse_id,
                     product_type="oranges",
-                    quantity_kg=self.restock_amount
+                    quantity_kg=restock_amount
                 )
                 engine.event_queue.schedule(event)
                 
@@ -222,28 +348,37 @@ class WarehouseAgent:
                     'warehouse_id': self.warehouse_id,
                     'time': current_time,
                     'current_inventory': self.current_inventory_kg,
-                    'restock_amount': self.restock_amount,
+                    'restock_amount': restock_amount,
                     'eta': restock_time
                 })
         
         return events
     
-    def receive_order(self, order: Order):
+    def receive_order(self, order: Order, current_time: float = 0.0):
         """
         Receive a new order from a retailer.
-        
-        Args:
-            order: Order object
+        Gracefully clamps massive incoming orders to the fleet logistics limit.
         """
+        # Determine max truck capacity we currently own
+        max_truck_cap = max((t.truck_type.capacity_kg for t in self.trucks), default=8000.0) if self.trucks else 8000.0
+        
+        # Clamp the incoming order quantity so we never choke the single-truck dispatch loop
+        if order.quantity_kg > max_truck_cap:
+            logger.debug(f"[WAREHOUSE] {self.warehouse_id} clamping massive order {order.order_id} "
+                         f"from {order.quantity_kg:.1f}kg down to {max_truck_cap:.1f}kg max bound.")
+            order.quantity_kg = max_truck_cap
+        else:
+            logger.debug(f"[WAREHOUSE] {self.warehouse_id} received standard order {order.order_id}: {order.quantity_kg:.1f}kg")
+
+        # Record ONLY the physically accepted workload as our true localized demand
+        context = {
+            'hour': int((current_time / 60.0) % 24),
+            'day': int((current_time / 1440.0) % 7)
+        }
+        self.inventory_model.record_demand(current_time, order.quantity_kg, context)
+
         self.pending_orders.append(order)
-        # Sort by priority (higher priority first)
-        self.pending_orders.sort(key=lambda o: o.priority, reverse=True)
-        
-        # OPTIMIZATION 8: Set flag for event-driven processing
         self.pending_orders_changed = True
-        
-        logger.info(f"[ORDER] {self.warehouse_id} received order {order.order_id} from {order.retailer_id}: "
-                   f"{order.quantity_kg:.1f}kg (Priority: {order.priority:.2f}, Pending Orders: {len(self.pending_orders)})")
     
     def _allocate_orders(self, current_time: float) -> List[Dict]:
         """
@@ -271,6 +406,9 @@ class WarehouseAgent:
         if not available_trucks:
             return events
         
+        # Sort orders by priority (highest first) so urgent orders are dispatched first
+        self.pending_orders.sort(key=lambda o: o.priority, reverse=True)
+        
         # Process orders in priority order
         orders_to_remove = []
         
@@ -278,7 +416,9 @@ class WarehouseAgent:
             if not available_trucks:
                 break
             
-            # Check if we have enough inventory
+            # Check if we have enough inventory to fulfil this order.
+            # Use actual inventory for batch allocation decisions (perceived is
+            # for reorder trigger only — dispatch needs ground truth).
             if self.current_inventory_kg < order.quantity_kg:
                 self.inventory_shortages += 1
                 events.append({
@@ -287,7 +427,7 @@ class WarehouseAgent:
                     'order_id': order.order_id,
                     'time': current_time,
                     'required_kg': order.quantity_kg,
-                    'available_kg': self.current_inventory_kg
+                    'available_kg': self._perceived_inventory_kg
                 })
                 continue
             
@@ -303,9 +443,81 @@ class WarehouseAgent:
                 continue
             
             # Allocate batches for this order
-            batches = self._allocate_batches(order.quantity_kg)
+            batches = self._allocate_batches(order.quantity_kg, current_time)
             if not batches:
                 continue
+
+            # PRE-DISPATCH RSL CHECK: Verify allocated batches meet quality threshold
+            # before loading onto a truck. This prevents dispatching cargo that will
+            # fail the quality check at delivery, wasting a truck trip.
+            min_rsl = self.config.get('quality_control', {}).get('min_acceptable_rsl_hours', 72.0)
+            total_shelf_life = self.config.get('cargo', {}).get('initial_rsl_hours', 336.0)
+            # Convert min_rsl_hours to RSL percentage
+            min_rsl_pct = (min_rsl / total_shelf_life) * 100.0
+
+            acceptable_batches = [b for b in batches if b.current_rsl >= min_rsl_pct]
+            rejected_batches = [b for b in batches if b.current_rsl < min_rsl_pct]
+
+            if rejected_batches:
+                rejected_kg = sum(b.quantity for b in rejected_batches)
+                logger.warning(
+                    f"[PRE-DISPATCH] {self.warehouse_id}: Rejected {len(rejected_batches)} batches "
+                    f"({rejected_kg:.1f}kg) for order {order.order_id} ? RSL below {min_rsl_pct:.1f}% "
+                    f"(min {min_rsl:.0f}h). Disposing spoiled stock."
+                )
+                # Remove spoiled batches from inventory permanently
+                for b in rejected_batches:
+                    if b in self.inventory_batches:
+                        self.inventory_batches.remove(b)
+                self._recalculate_inventory()
+
+            if not acceptable_batches:
+                # All batches failed ? cannot fulfil this order right now
+                # Return nothing to inventory (batches were already removed above)
+                events.append({
+                    'type': 'dispatch_blocked_low_rsl',
+                    'warehouse_id': self.warehouse_id,
+                    'order_id': order.order_id,
+                    'retailer_id': order.retailer_id,
+                    'time': current_time,
+                    'reason': 'all_batches_below_rsl_threshold',
+                })
+                logger.warning(
+                    f"[PRE-DISPATCH] {self.warehouse_id}: Cannot dispatch order {order.order_id} "
+                    f"? no acceptable batches available. Waiting for restock."
+                )
+                continue
+
+            # Use only acceptable batches; adjust order quantity if partial
+            batches = acceptable_batches
+            actual_qty = sum(b.quantity for b in batches)
+
+            # RSL-AT-DELIVERY PREDICTION: Warn if cargo will spoil before reaching retailer.
+            # This uses the AIManager's RSLForecaster to predict RSL at delivery time
+            # given current temperature and the estimated route duration.
+            if self.ai_manager is not None and batches:
+                avg_rsl = sum(b.current_rsl for b in batches) / len(batches)
+                estimated_travel_hours = 0.5  # conservative default (30 min)
+                # Use actual ambient conditions stored from the last engine update tick
+                temp_c = self._current_temperature
+                humidity = self._current_humidity
+                rsl_prediction = self.ai_manager.prediction_pod.rsl.predict(
+                    avg_rsl, estimated_travel_hours, temp_c, humidity
+                ) if self.ai_manager.prediction_pod.rsl is not None else None
+
+                if rsl_prediction and rsl_prediction.get("recommendation") == "reject":
+                    logger.warning(
+                        f"[RSL-PREDICT] {self.warehouse_id}: Order {order.order_id} ? "
+                        f"cargo predicted to spoil in transit "
+                        f"(predicted RSL at delivery: {rsl_prediction.get('predicted_rsl_pct', 0):.1f}%). "
+                        f"Dispatching anyway ? retailer needs stock."
+                    )
+                elif rsl_prediction and rsl_prediction.get("recommendation") == "warn":
+                    logger.warning(
+                        f"[RSL-PREDICT] {self.warehouse_id}: Order {order.order_id} ? "
+                        f"cargo RSL marginal at delivery "
+                        f"(predicted: {rsl_prediction.get('predicted_rsl_pct', 0):.1f}%). Dispatching."
+                    )
             
             # Get retailer node from order
             retailer_node = order.retailer_node_id
@@ -324,20 +536,22 @@ class WarehouseAgent:
                 # Update order status
                 order.assign_truck(best_truck.truck_id, current_time)
                 order.mark_departed(current_time)
-                
+
                 # Move order to active
                 self.active_orders[order.order_id] = order
                 orders_to_remove.append(order)
-                
+
                 # Remove truck from available list
                 available_trucks.remove(best_truck)
-                
-                # Update metrics
-                self.current_inventory_kg -= order.quantity_kg
-                self.total_kg_shipped += order.quantity_kg
-                
-                logger.info(f"[DISPATCH] {self.warehouse_id} assigned order {order.order_id} to truck {best_truck.truck_id}: "
-                           f"{order.quantity_kg:.1f}kg → {order.retailer_id} (Inventory: {self.current_inventory_kg:.1f}kg)")
+
+                # Update metrics (use actual dispatched quantity, may differ from order qty)
+                self.total_kg_shipped += actual_qty
+
+                logger.info(
+                    f"[DISPATCH] {self.warehouse_id} assigned order {order.order_id} to truck "
+                    f"{best_truck.truck_id}: {actual_qty:.1f}kg ? {order.retailer_id} "
+                    f"(Perceived Inv: {self._perceived_inventory_kg:.1f}kg)"
+                )
                 
                 events.append({
                     'type': 'order_assigned',
@@ -355,9 +569,12 @@ class WarehouseAgent:
         for order in orders_to_remove:
             self.pending_orders.remove(order)
         
+        # SCIENTIFIC FIX (H2): Ensure inventory count is perfectly synced after allocation
+        self._recalculate_inventory()
+        
         return events
     
-    def _allocate_batches(self, quantity_kg: float) -> List[OrangeBatch]:
+    def _allocate_batches(self, quantity_kg: float, current_time: float) -> List[OrangeBatch]:
         """
         Allocate batches from inventory for an order.
         
@@ -392,15 +609,13 @@ class WarehouseAgent:
             else:
                 # Split batch
                 # Create new batch with needed quantity
-                import datetime
                 new_batch = OrangeBatch(
                     f"{self.warehouse_id}_batch_{self.batch_counter:04d}",
                     remaining,
                     batch.harvest_date,
+                    current_time,
                     batch.current_rsl
                 )
-                # Preserve RSL tracking state
-                new_batch.last_update_time = batch.last_update_time
                 
                 self.batch_counter += 1
                 allocated.append(new_batch)
@@ -475,11 +690,12 @@ class WarehouseAgent:
                 del self.active_orders[order.order_id]
             
             # Trigger automatic reorder from retailer
+            # Trigger automatic reorder from retailer
+            retailer.notify_delivery_failed('quality_rejection', current_time)
             retailer.trigger_emergency_reorder(order.quantity_kg, current_time, engine)
             
             # Set truck to return to warehouse
             try:
-                from .truck_agent import TruckAgent
                 agent = self.truck_agents[truck.truck_id]
                 
                 # Convert TruckType to dict for router
@@ -507,6 +723,18 @@ class WarehouseAgent:
                     truck.status = "in_transit"
                     
                     logger.info(f"[DELIVERY FAILED] Truck {truck.truck_id} - all batches rejected at {retailer.retailer_id}, returning to {self.warehouse_id}")
+                else:
+                    # No return route — snap truck back to warehouse node so it
+                    # re-enters the available fleet on the next allocation cycle.
+                    truck.status = "idle"
+                    truck.current_route = None
+                    truck.destination_node = None
+                    truck.current_node = self.node_id  # recover to warehouse
+                    truck.current_location = self.location
+                    truck.route_progress = 0
+                    truck.segment_distance_traveled = 0.0
+                    self.trucks_changed = True
+                    logger.warning(f"[RETURN ROUTE FAILED] Truck {truck.truck_id} has no return route after rejection — recovered to warehouse {self.warehouse_id}")
             except Exception as e:
                 logger.warning(f"Failed to route truck {truck.truck_id} back after rejection: {type(e).__name__}: {e}")
             
@@ -540,17 +768,31 @@ class WarehouseAgent:
         # Mark order status
         if rejected_batches:
             order.status = 'partially_delivered'
+            if accepted_batches:
+                order.delivered_rsl_pct = sum(b.current_rsl for b in accepted_batches) / len(accepted_batches)
+            
             # Retailer may need to reorder shortfall
             shortfall_kg = sum(b.quantity for b in rejected_batches)
             if shortfall_kg > 0:
+                retailer.notify_delivery_failed('partial_rejection', current_time)
                 retailer.trigger_emergency_reorder(shortfall_kg, current_time, engine)
+            if order.order_id in self.active_orders:
+                self.completed_orders.append(order)
+                del self.active_orders[order.order_id]
+                self.total_orders_fulfilled += 1
         else:
             order.mark_delivered(current_time)
+            if accepted_batches:
+                order.delivered_rsl_pct = sum(b.current_rsl for b in accepted_batches) / len(accepted_batches)
+            
+            if order.order_id in self.active_orders:
+                self.completed_orders.append(order)
+                del self.active_orders[order.order_id]
+                self.total_orders_fulfilled += 1
         
         # Set truck to return to warehouse
         # Calculate route back to warehouse
         try:
-            from .truck_agent import TruckAgent
             agent = self.truck_agents[truck.truck_id]
             
             # Convert TruckType to dict for router
@@ -586,12 +828,40 @@ class WarehouseAgent:
                     'order_id': order.order_id,
                     'retailer_id': retailer.retailer_id,
                     'time': current_time,
-                    'quantity_kg': delivery_qty
+                    'quantity_kg': delivery_qty,
+                    'avg_rsl_at_delivery': round(order.delivered_rsl_pct, 2) if order.delivered_rsl_pct is not None else None,
+                }
+            else:
+                # No return route — snap truck back to warehouse node so it
+                # re-enters the available fleet on the next allocation cycle.
+                truck.status = "idle"
+                truck.current_route = None
+                truck.destination_node = None
+                truck.current_node = self.node_id  # recover to warehouse
+                truck.current_location = self.location
+                truck.route_progress = 0
+                truck.segment_distance_traveled = 0.0
+                self.trucks_changed = True
+                logger.warning(f"[RETURN ROUTE FAILED] Truck {truck.truck_id} has no return route after delivery — recovered to warehouse {self.warehouse_id}")
+                return {
+                    'type': 'delivery_complete',
+                    'truck_id': truck.truck_id,
+                    'order_id': order.order_id,
+                    'retailer_id': retailer.retailer_id,
+                    'time': current_time,
+                    'quantity_kg': delivery_qty,
+                    'avg_rsl_at_delivery': round(order.delivered_rsl_pct, 2) if order.delivered_rsl_pct is not None else None,
                 }
         except Exception as e:
-            # Routing failed, truck will stay at retailer
+            # Routing failed — snap truck back to warehouse so it re-enters the fleet
             logger.warning(f"[RETURN ROUTE FAILED] Truck {truck.truck_id}: Cannot calculate return route from "
                           f"retailer (Order: {order.order_id}) - {type(e).__name__}: {str(e)}")
+            truck.status = "idle"
+            truck.current_route = None
+            truck.destination_node = None
+            truck.current_node = self.node_id  # recover to warehouse
+            truck.current_location = self.location
+            self.trucks_changed = True
         
         return None
     
@@ -609,10 +879,14 @@ class WarehouseAgent:
         # Mark order as completed
         if truck.assigned_order_id and truck.assigned_order_id in self.active_orders:
             order = self.active_orders[truck.assigned_order_id]
-            order.mark_delivered(current_time)
+            if order.status != 'delivered' and order.status != 'partially_delivered':
+                order.mark_delivered(current_time)
+                self.total_orders_fulfilled += 1
             self.completed_orders.append(order)
             del self.active_orders[truck.assigned_order_id]
-            self.total_orders_fulfilled += 1
+            
+            # Increment truck delivery counter
+            truck.total_deliveries += 1
             
             logger.info(f"[RETURN] Truck {truck.truck_id} returned to {self.warehouse_id} "
                        f"(Order {truck.assigned_order_id} fulfilled, Total fulfilled: {self.total_orders_fulfilled})")
@@ -635,68 +909,80 @@ class WarehouseAgent:
     def restock(self, quantity_kg: float, current_time: float) -> Dict:
         """
         Receive restocking shipment.
-        
+
         Args:
             quantity_kg: Quantity received
-            current_time: Current simulation time
-            
+            current_time: Current simulation time in minutes
+
         Returns:
             Event dict
         """
-        # Check capacity before restocking (NEW - Phase 2)
-        if hasattr(self, 'max_capacity_kg'):
-            available_capacity = self.max_capacity_kg - self.current_inventory_kg
-            if quantity_kg > available_capacity:
-                # Can only accept partial shipment
-                accepted_qty = available_capacity
-                rejected_qty = quantity_kg - available_capacity
-                
-                logger.warning(f"[CAPACITY] Warehouse {self.warehouse_id} at capacity! "
-                              f"Rejecting {rejected_qty:.1f}kg (current: {self.current_inventory_kg:.0f}kg, "
-                              f"max: {self.max_capacity_kg:.0f}kg)")
-                
-                quantity_kg = accepted_qty
-                
-                if quantity_kg <= 0:
-                    return {
-                        'type': 'restock_rejected',
-                        'warehouse_id': self.warehouse_id,
-                        'time': current_time,
-                        'reason': 'at_max_capacity',
-                        'current_inventory_kg': self.current_inventory_kg,
-                        'max_capacity_kg': self.max_capacity_kg
-                    }
-        
-        import datetime
-        
+        # Check capacity before restocking
+        available_capacity = self.max_capacity_kg - self.current_inventory_kg
+        if quantity_kg > available_capacity:
+            # Can only accept partial shipment
+            accepted_qty = available_capacity
+            rejected_qty = quantity_kg - available_capacity
+
+            logger.warning(f"[CAPACITY] Warehouse {self.warehouse_id} at capacity! "
+                          f"Rejecting {rejected_qty:.1f}kg (current: {self.current_inventory_kg:.0f}kg, "
+                          f"max: {self.max_capacity_kg:.0f}kg)")
+
+            quantity_kg = accepted_qty
+
+            if quantity_kg <= 0:
+                self.pending_restock = False  # Reset so future restocks can be triggered
+                return {
+                    'type': 'restock_rejected',
+                    'warehouse_id': self.warehouse_id,
+                    'time': current_time,
+                    'reason': 'at_max_capacity',
+                    'current_inventory_kg': round(self.current_inventory_kg, 2),
+                    'perceived_inventory_kg': round(self._perceived_inventory_kg, 2),
+                    'max_capacity_kg': self.max_capacity_kg,
+                }
+
+        # Represent the restock harvest date as a datetime derived from
+        # simulation time so FIFO ordering is consistent with simulation time.
+        # Using a fixed epoch (2000-01-01) + current_time minutes keeps
+        # harvest_date comparable to the epoch dates used in
+        # _initialize_inventory_batches.
+        sim_epoch = datetime.datetime(2000, 1, 1)
+        # SCIENTIFIC FIX (V1-Harvest): Add realistic Farm-to-Warehouse lead time (2 days)
+        # Fresh oranges don't appear instantly; they are harvested and transported.
+        lead_time_minutes = 2.0 * 24.0 * 60.0 # 2 days
+        harvest_date = sim_epoch + datetime.timedelta(minutes=current_time - lead_time_minutes)
+
         # Create batches for the restock (get from config)
         batch_size_kg = self.config.get('warehouse_operations', {}).get('batch_size_kg', 1000)
         num_batches = int(quantity_kg / batch_size_kg)
         remainder = quantity_kg % batch_size_kg
-        
+
         for i in range(num_batches):
             batch = OrangeBatch(
                 f"{self.warehouse_id}_batch_{self.batch_counter:04d}",
-                batch_size_kg,  # quantity
-                datetime.datetime.now(),  # harvest_date
-                100.0  # initial_quality
+                batch_size_kg,
+                harvest_date,
+                current_time,
+                100.0
             )
             self.inventory_batches.append(batch)
             self.batch_counter += 1
-        
-        # Handle remainder (if any)
+
         if remainder > 0:
             batch = OrangeBatch(
                 f"{self.warehouse_id}_batch_{self.batch_counter:04d}",
-                remainder,  # quantity
-                datetime.datetime.now(),  # harvest_date
-                100.0  # initial_quality
+                remainder,
+                harvest_date,
+                current_time,
+                100.0
             )
             self.inventory_batches.append(batch)
             self.batch_counter += 1
-        
+
         self.current_inventory_kg += quantity_kg
-        self.pending_restock = False # Reset pending flag
+        self._perceived_inventory_kg += quantity_kg
+        self.pending_restock = False  # Reset pending flag
         
         return {
             'type': 'warehouse_restock',

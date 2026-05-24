@@ -1,0 +1,885 @@
+# Agent Behaviors & System Architecture - PPT Slide Outline
+**Project**: Supply Chain Digital Twin - Real-World Data Integration  
+**Purpose**: Professor Presentation on Agent Behaviors and Real-Data Transition
+
+---
+
+## Slide 1: Title Slide
+
+**Title**: Digital Twin Supply Chain Simulation  
+**Subtitle**: Agent-Based Architecture & Real-World Data Integration
+
+**Content**:
+- Project: Supply Chain Digital Twin for Orange Distribution (Nagpur, India)
+- Focus: Agent Behaviors & Transition from Simulation to Real Data
+- Date: [Current Date]
+- Prepared by: [Your Name]
+
+---
+
+## Slide 2: Agenda
+
+**What We'll Cover Today**:
+
+1. System Architecture Overview
+2. Agent Types & Responsibilities
+3. Agent Interaction Patterns
+4. Current Data Flow (Simulated)
+5. Real-World Data Integration Plan
+6. Next Steps: AI/ML/RL Integration
+
+---
+
+## Slide 3: System Architecture - High-Level View
+
+**Three-Layer Architecture**:
+
+**Layer 1: Simulation Engine**
+- Time-stepped orchestration (1-minute intervals)
+- Event-driven triggers (orders, deliveries, accidents)
+- Coordinates all agents and models
+
+**Layer 2: Agents & Models**
+- Autonomous agents: Warehouse, Retailer, Truck
+- Environmental models: Weather, Traffic, Disruption
+- Decentralized decision-making
+
+**Layer 3: Data & Visualization**
+- Real-time data logging (InfluxDB)
+- MQTT message broker for IoT telemetry
+- React dashboard for visualization
+
+---
+
+## Slide 4: Agent-Based Modeling Paradigm
+
+**Why Agent-Based?**:
+
+- **Decentralized Intelligence**: Each entity makes autonomous decisions
+- **Emergent Behavior**: System-level patterns emerge from individual actions
+- **Realistic**: Mimics real-world supply chain operations
+- **Scalable**: Easy to add more agents without redesigning
+
+**Key Characteristics**:
+- Agents perceive their environment (weather, traffic, inventory)
+- Agents act based on internal logic and external stimuli
+- Agents interact through orders, deliveries, and shared resources
+- No central controller—distributed decision-making
+
+---
+
+## Slide 5: Agent Type 1 - Warehouse Agent
+
+**Role**: Central distribution hub managing inventory and fleet
+
+**Responsibilities**:
+1. **Inventory Management**
+   - Store oranges in cold storage (6°C, 88% humidity)
+   - Track batch-level Remaining Shelf Life (RSL)
+   - Monitor spoilage and remove expired batches
+
+2. **Order Processing**
+   - Receive orders from retailers
+   - Prioritize based on urgency and inventory levels
+   - Allocate trucks to fulfill orders
+
+3. **Fleet Management**
+   - Manage heterogeneous truck fleet (small, medium, large)
+   - Track truck availability and status
+   - Optimize truck-order allocation
+
+4. **Restocking**
+   - Monitor inventory levels against reorder point
+   - Trigger restocking when below threshold
+   - Schedule supplier deliveries
+
+**Key Metrics**:
+- Current inventory (kg)
+- Available trucks
+- Pending orders
+- Trucks in transit
+
+---
+
+## Slide 6: Agent Type 2 - Retailer Agent (Wholesaler)
+
+**Role**: Wholesale distribution center serving restaurants, shops, hotels
+
+**Responsibilities**:
+1. **Demand Simulation**
+   - Generate customer arrivals (Poisson process)
+   - Time-varying demand (hour, day, month)
+   - Weather-sensitive demand patterns
+
+2. **Sales Processing**
+   - Fulfill customer orders from inventory
+   - Track successful sales and stockouts
+   - Record lost sales due to insufficient stock
+
+3. **Inventory Management**
+   - (s,S) reorder policy (reorder when inventory ≤ s, order up to S)
+   - Calculate dynamic reorder points based on demand forecast
+   - Safety stock based on lead time and demand variability
+
+4. **Order Placement**
+   - Select best warehouse (distance + load balancing)
+   - Place orders when inventory low
+   - Track pending orders and ETAs
+
+**Key Metrics**:
+- Current inventory (kg)
+- Service level (% customers served)
+- Stockout count
+- Total sales (kg)
+
+---
+
+## Slide 7: Agent Type 3 - Truck Agent
+
+**Role**: Autonomous transport vehicle delivering cargo
+
+**Responsibilities**:
+1. **Route Navigation**
+   - Follow OpenStreetMap road network
+   - Real-time route calculation (Dijkstra's algorithm)
+   - Multi-objective optimization (distance, time, fuel, road quality)
+
+2. **Movement & Speed Control**
+   - Adjust speed based on traffic congestion
+   - Respond to road accidents and closures
+   - Account for driver fatigue
+
+3. **Fuel Management**
+   - Track fuel consumption (load-dependent, speed-dependent)
+   - Monitor fuel level continuously
+   - Trigger refueling when below 20% capacity
+
+4. **Cargo Monitoring**
+   - Track cargo temperature (refrigerated transport at 4°C)
+   - Monitor Remaining Shelf Life (RSL) of orange batches
+   - Ensure quality throughout transport
+
+5. **Driver Simulation**
+   - Shift duration limits (10 hours)
+   - Mandatory breaks after 5 hours
+   - Fatigue accumulation (affects speed and accident risk)
+
+**Key Metrics**:
+- Current location (GPS coordinates)
+- Speed (km/h)
+- Fuel level (%)
+- Cargo weight (kg)
+- Driver fatigue (hours)
+
+---
+
+## Slide 8: Warehouse Agent - Detailed Workflow
+
+**Decision Logic Flow**:
+
+1. **Update Phase (Every Time Step)**:
+   - Update RSL for all inventory batches in cold storage
+   - Remove spoiled batches (RSL ≤ 0)
+   - Update all owned truck agents
+
+2. **Order Processing**:
+   - Check for new orders from retailers
+   - If orders available AND trucks available:
+     - Select highest priority order
+     - Allocate best available truck (capacity match)
+     - Load cargo and assign route
+
+3. **Truck Lifecycle Management**:
+   - **Loading**: Truck waits for loading time (6-4 min per ton)
+   - **Departure**: Truck begins route to retailer
+   - **Transit**: Warehouse tracks truck via telemetry
+   - **Arrival**: Truck unloads at retailer (4-2 min per ton)
+   - **Return**: Truck returns to warehouse, status → idle
+
+4. **Restocking Check**:
+   - If inventory ≤ reorder point:
+     - Schedule restocking event
+     - Supplier delivery after lead time (1 ± 0.3 days)
+
+**Example Scenario**:
+- Retailer R001 orders 500kg
+- Warehouse WH001 has 3 idle trucks and 10,000kg inventory
+- Allocates medium truck (3-ton capacity)
+- Loading time: 5 min/ton × 0.5 tons = 2.5 minutes
+- Truck departs → arrives → unloads → returns
+
+---
+
+## Slide 9: Retailer Agent - Detailed Workflow
+
+**Decision Logic Flow**:
+
+1. **Demand Generation (Every Time Step)**:
+   - Calculate arrival rate multiplier:
+     ```
+     arrival_rate = base_rate × time_of_day × day_of_week × 
+                    month × weather × temperature_effect
+     ```
+   - Generate customer arrivals (Poisson distribution)
+   - For each customer: generate purchase quantity (Gaussian)
+
+2. **Sales Processing**:
+   - Check if inventory ≥ requested quantity
+   - If YES: Sell → Update inventory → Log sale event
+   - If NO: Stockout → Log lost sale → Increment stockout counter
+
+3. **Inventory Check (Every 6 Hours)**:
+   - Calculate reorder point `s` dynamically:
+     ```
+     s = (avg_demand × lead_time) + safety_stock
+     safety_stock = z_score × σ_demand × √(lead_time + review_period)
+     ```
+   - If inventory ≤ `s` AND no pending order:
+     - Calculate order quantity (Economic Order Quantity or fixed days)
+     - Select warehouse (40% distance, 60% load balancing)
+     - Place order
+
+4. **Order Tracking**:
+   - Monitor order status (pending → assigned → in_transit → delivered)
+   - Receive delivery from warehouse truck
+   - Update inventory with delivered quantity
+
+**Example Demand Multipliers**:
+- Monday 10 AM: 0.9 (day) × 1.0 (hour) = 0.9× base
+- Saturday 6 PM: 1.4 (day) × 1.6 (hour) = 2.24× base
+- Rainy day: ×0.85 (people stay home)
+- Hot day (35°C): ×1.2 (more fresh produce demand)
+
+---
+
+## Slide 10: Truck Agent - Detailed Workflow
+
+**Decision Logic Flow**:
+
+1. **Assignment Phase**:
+   - Warehouse assigns order to truck
+   - **Loading status**: Wait for loading time
+   - Calculate route (Dijkstra on OSM network)
+   - Departure event published
+
+2. **Transit Phase (Every Time Step)**:
+   - Update movement along route segments
+   - Calculate effective speed:
+     ```
+     speed = min(truck_max_speed, segment_speed) × 
+             traffic_congestion × weather_factor × 
+             (1 - fatigue_penalty)
+     ```
+   - Update fuel consumption (load + speed dependent):
+     ```
+     fuel_rate = base_consumption × load_factor × speed_factor
+     ```
+   - Update cargo RSL based on ambient temperature
+   - Check for rerouting (if accident on route)
+
+3. **Driver Management**:
+   - Accumulate fatigue (minutes driven)
+   - Trigger break after 5 hours driving
+   - Break duration: 30 minutes (truck stops)
+   - Trigger sleep after 10-hour shift
+
+4. **Arrival Phase**:
+   - Reach destination node → **Arrived status**
+   - **Unloading status**: Wait for unloading time
+   - Deliver cargo to retailer
+   - Quality check: Reject if average RSL < 72 hours
+   - Return to warehouse
+
+5. **Fuel Checks**:
+   - Continuous monitoring
+   - If fuel < 20% → Trigger refueling
+   - Refueling time: 15 minutes (40 L/min)
+
+**Example Movement**:
+- Truck on 50 km route, dry weather, light traffic
+- Base speed: 50 km/h
+- Traffic multiplier: 0.9 (10% congestion)
+- Weather multiplier: 1.0 (clear)
+- Fatigue penalty: 0.02 (2% slower after 2 hours)
+- Effective speed: 50 × 0.9 × 1.0 × 0.98 = 44.1 km/h
+- Trip time: 50 / 44.1 = 68 minutes
+
+---
+
+## Slide 11: Agent Interaction Patterns
+
+**Order-Delivery Flow**:
+
+```
+1. RETAILER: Inventory drops below reorder point
+   ↓
+2. RETAILER: Places order → Selects warehouse dynamically
+   ↓
+3. WAREHOUSE: Receives order → Adds to queue
+   ↓
+4. WAREHOUSE: Allocates idle truck → Loads cargo
+   ↓
+5. TRUCK: Begins route to retailer
+   ↓
+6. TRUCK: Transits (updates position, fuel, cargo)
+   ↓
+7. TRUCK: Arrives → Unloads at retailer
+   ↓
+8. RETAILER: Receives delivery → Updates inventory
+   ↓
+9. TRUCK: Returns to warehouse → Status idle
+```
+
+**Warehouse Restocking Flow**:
+
+```
+1. WAREHOUSE: Inventory ≤ reorder point
+   ↓
+2. WAREHOUSE: Schedules restocking event
+   ↓
+3. SUPPLIER: (External) Delivers after lead time
+   ↓
+4. WAREHOUSE: Receives batches → Updates inventory
+```
+
+**Collision Scenarios** (Agent Coordination):
+- Multiple retailers order from same warehouse
+  - **Solution**: Priority queue (urgency-based)
+  
+- Truck on route encounters accident
+  - **Solution**: Reroute in real-time
+  
+- Warehouse has orders but no trucks
+  - **Solution**: Queue orders until truck available
+
+---
+
+## Slide 12: Environmental Models - Current Implementation
+
+**Weather Model**:
+- **Type**: Markov chain state machine
+- **States**: Clear, Cloudy, Light Rain, Rain, Heavy Rain, Fog
+- **Seasonal Logic**: Monsoon (Jun-Sep) → 80% rain probability
+- **Diurnal Patterns**: Fog in winter mornings (4-8 AM)
+- **Temperature**: Month and hour-dependent (13-42°C range)
+- **Humidity**: Season and weather-dependent (20-95%)
+- **Affects**: Traffic speed, demand, accident rates
+
+**Traffic Model**:
+- **Type**: Greenshields model (density-based)
+- **Formula**: `speed = free_flow × (1 - density/jam_density)`
+- **Time-of-Day**: Rush hours (7-9 AM, 5-7 PM) → 2× density
+- **Weather Impact**: Rain → 15-30% slower, Fog → 25% slower
+- **Accidents**: Probabilistic based on road type, weather, time
+
+**Disruption Model**:
+- **Accidents**: Location-specific, duration-dependent severity
+- **Frequency**: 1-3 accidents/day (realistic for city scale)
+- **Impact**: Blocks lanes → Increases congestion → Rerouting
+
+---
+
+## Slide 13: Data Flow - Current State (Simulated)
+
+**Simulation → Storage → Visualization**:
+
+```
+┌─────────────────────────────────────┐
+│    SIMULATION ENGINE (Python)      │
+│  ┌──────────┬──────────┬─────────┐ │
+│  │ Weather  │ Traffic  │ Demand  │ │
+│  │ Model    │ Model    │ Model   │ │
+│  │(Markov)  │(Formula) │(Rules)  │ │
+│  └────┬─────┴────┬─────┴────┬────┘ │
+│       │          │          │       │
+│       ▼          ▼          ▼       │
+│  ┌─────────────────────────────┐   │
+│  │   AGENTS (Autonomous)       │   │
+│  │  • Warehouse (fleet mgmt)   │   │
+│  │  • Retailer (demand sim)    │   │
+│  │  • Truck (navigation)       │   │
+│  └──────────┬──────────────────┘   │
+└─────────────┼──────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────┐
+│    DATA LOGGING (3-Tier)            │
+│  Tier 1: Events (discrete)          │
+│  Tier 2: Snapshots (periodic)       │
+│  Tier 3: Telemetry (high-freq)      │
+└──────────┬──────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────┐
+│    InfluxDB (Time-Series)           │
+│  • Measurements per entity type     │
+│  • 1-minute granularity             │
+│  • Run ID tagging                   │
+└──────────┬──────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────┐
+│    DASHBOARD (React + Leaflet)      │
+│  • Interactive map                  │
+│  • Real-time charts                 │
+│  • KPI cards                        │
+└─────────────────────────────────────┘
+```
+
+**Problem**: All models use **SIMULATED** data (not real-world)
+
+---
+
+## Slide 14: Transition Plan - Simulated to Real Data
+
+**Current vs Future State**:
+
+| Component | Current (Simulated) | Future (Real-World) |
+|-----------|---------------------|---------------------|
+| **Weather** | Markov chain generator | Visual Crossing API (50 years history) |
+| **Traffic** | Time-of-day formula | Uber Movement historical data + ML model |
+| **Demand** | Hardcoded multipliers | Kaggle FMCG dataset + ML predictions |
+| **Supply** | Fixed schedules | NHB agricultural statistics (seasonal) |
+| **Fuel Prices** | Static | IOC daily scraping |
+
+**Integration Approach**:
+1. **Data Services Layer** (NEW): API wrappers for all data sources
+2. **ML Models**: Train on historical data, predict with real-time inputs
+3. **Condition Matching**: Match current conditions to historical patterns
+4. **Fallback Strategy**: Keep simulated models as backup
+
+---
+
+## Slide 15: Real-World Data Sources
+
+**All FREE Sources Verified**:
+
+**1. Weather** ☁️
+- **Source**: Visual Crossing Weather API
+- **Coverage**: 1970-2024, hourly granularity
+- **Free Tier**: 1000 API calls/day
+- **Data**: Temperature, precipitation, wind, humidity, visibility
+
+**2. Traffic** 🚦
+- **Source**: Uber Movement (Historical, 2016-2018)
+- **Cities**: Delhi, Mumbai, Bengaluru, Hyderabad
+- **Use**: Train traffic prediction models
+- **Fallback**: NHAI road closure APIs
+
+**3. Demand** 🛒
+- **Source**: Kaggle FMCG Sales Dataset
+- **Records**: 25,000+ transactions (2022-2024)
+- **Use**: Train demand forecasting model
+
+**4. Agricultural Supply** 🍊
+-**Source**: National Horticulture Board (NHB)
+- **Data**: Nagpur orange production (2004-2024, annual)
+- **Use**: Model seasonal supply patterns
+
+**5. Fuel Prices** ⛽
+- **Source**: Indian Oil Corporation (IOC)
+- **History**: 2002-2024, daily prices
+- **Method**: Web scraping
+
+**6. Logistics** 🚛
+- **Source**: Kaggle Delivery Logistics Dataset
+- **Records**: 25,000 deliveries (WEATHER-TAGGED!)
+- **Use**: Train delivery time prediction model
+
+---
+
+## Slide 16: Data Integration Architecture
+
+**New Layer: Data Services**:
+
+```
+┌─────────────────────────────────────────────┐
+│         SIMULATION ENGINE                   │
+│  (Existing: Agents, Models, Logic)          │
+└──────────┬──────────────────────────────────┘
+           │
+┌──────────▼──────────────────────────────────┐
+│    DATA INTEGRATION LAYER (NEW)             │
+│  ┌────────────┬────────────┬────────────┐   │
+│  │ Weather    │ Traffic    │ Demand     │   │
+│  │ Service    │ Service    │ Service    │   │
+│  ├────────────┼────────────┼────────────┤   │
+│  │ Supply     │ Fuel       │ Logistics  │   │
+│  │ Service    │ Service    │ Service    │   │
+│  └────────────┴────────────┴────────────┘   │
+└──────────┬──────────────────────────────────┘
+           │
+┌──────────▼──────────────────────────────────┐
+│    DATA SOURCES (External)                  │
+│  • Visual Crossing API (weather)            │
+│  • Uber Movement CSV (traffic)              │
+│  • Kaggle FMCG CSV (demand)                 │
+│  • NHB Excel (agriculture)                  │
+│  • IOC Web (fuel)                           │
+└─────────────────────────────────────────────┘
+```
+
+**Key Features**:
+- **Caching**: API rate limit management (1000/day)
+- **Fallback**: Use simulated if API fails
+- **ML Models**: Trained offline, inference online
+- **Condition Matching**: "It's raining" → Find historical traffic during rain
+
+---
+
+## Slide 17: Agent Behavior with Real Data
+
+**Example: Retailer Demand with Real Weather**:
+
+**OLD (Simulated)**:
+```python
+weather = weather_model.generate()  # Fake weather
+demand_multiplier = 0.85 if weather == "rain" else 1.0
+```
+
+**NEW (Real Data + ML)**:
+```python
+# Get real current weather
+weather = weather_service.get_current(location, timestamp)
+# Returns: {'condition': 'rain', 'temp': 18.5, 'precip': 8.2}
+
+# Use trained ML model to predict demand
+predicted_demand = demand_model.predict(
+    day_of_week=2,  # Tuesday
+    month=7,        # July
+    temperature=weather['temp'],
+    precipitation=weather['precip'],
+    weather_condition=weather['condition']
+)
+# Model learned from 25,000 real transactions!
+```
+
+**Result**: Demand patterns based on **actual observed behavior**, not assumptions!
+
+---
+
+## Slide 18: Condition-Based Data Matching
+
+**Intelligent Correlation Strategy**:
+
+**Problem**: Real-time traffic API costs $300/month (not free)
+
+**Solution**: Use historical traffic + current weather matching
+
+**Approach**:
+1. **Tag historical traffic** data with weather conditions
+   - Uber Movement 2016-2018 data
+   - Match each record with historical weather from same date/time
+
+2. **Current simulation step**:
+   - Get real current weather: "Heavy rain, 25mm/hr"
+   - Query: "Find traffic patterns during heavy rain"
+   - Apply historical traffic pattern to current routes
+
+3. **Fallback hierarchy**:
+   ```
+   Exact match (heavy rain) 
+     ↓ No data?
+   Similar condition (rain, 0.90 similarity)
+     ↓ No data?
+   Time-of-day baseline + weather adjustment
+   ```
+
+**Academic Rigor**: Based on real correlations, not hardcoded multipliers!
+
+---
+
+## Slide 19: Implementation Phases
+
+**5-Week Rollout**:
+
+**Week 1**: Infrastructure Setup
+- Create `src/data_services/` module
+- Implement base service class
+- Set up caching layer
+- Add dependencies
+
+**Week 2**: Weather Integration
+- Implement `WeatherService` wrapper
+- Replace `weather_model.py` calls
+- Test with free API tier (1000 calls/day)
+- Validate against simulation baseline
+
+**Week 3**: Demand Model Training
+- Download Kaggle FMCG dataset
+- Tag with historical weather
+- Train Random Forest model
+- Integrate into `retailer_agent.py`
+
+**Week 4**: Remaining Services
+- Implement supply service (NHB data)
+- Implement fuel service (IOC scraping)
+- Implement logistics model (Kaggle delivery)
+
+**Week 5**: End-to-End Testing
+- Rain scenario: Real rain → traffic + demand effects
+- Weekend scenario: Real weekend demand patterns
+- Harvest season: Real supply availability
+- Validation metrics
+
+---
+
+## Slide 20: Success Metrics
+
+**Technical Validation**:
+- ✅ API call count < 900/day (stay under limit)
+- ✅ ML model accuracy > 80%
+- ✅ Zero crashes from integration
+- ✅ Data latency < 2 seconds
+
+**Functional Validation**:
+- ✅ Weather matches real-world on test dates
+- ✅ Demand predictions within 20% of Kaggle patterns
+- ✅ Traffic aligns with Uber Movement data
+- ✅ Supply seasonality reflects NHB harvest data
+
+**Academic Rigor** (for Professor):
+- ✅ All data sources are real-world
+- ✅ Correlations are data-driven (ML-learned)
+- ✅ System is academically defensible
+- ✅ Ready for RL/AI model integration
+
+---
+
+## Slide 21: Next Steps - AI/ML/RL Integration
+
+**After Real Data Integration**:
+
+**Phase 1: Supervised Learning** (Current Plan)
+- Demand forecasting (Random Forest)
+- Delivery time prediction (Regression)
+- Traffic estimation (trained on Uber data)
+
+**Phase 2: Reinforcement Learning** (Future)
+- **Truck Routing Optimization**:
+  - State: location, fuel, traffic, weather, cargo
+  - Action: route selection
+  - Reward: minimize time + fuel + spoilage
+  
+- **Inventory Management**:
+  - State: inventory level, demand forecast, lead time
+  - Action: reorder quantity and timing
+  - Reward: maximize service level, minimize holding cost
+  
+- **Fleet Allocation**:
+  - State: pending orders, available trucks, warehouse inventory
+  - Action: truck-order matching
+  - Reward: minimize wait time, maximize throughput
+
+**Phase 3: Deep Learning** (Future)
+- Demand forecasting (LSTM for time-series)
+- Image recognition (quality inspection via cameras)
+- Predictive maintenance (truck failure prediction)
+
+---
+
+## Slide 22: Academic Contributions
+
+**Novel Aspects of This Work**:
+
+1. **Real-World Data Fusion**
+   - Condition-based matching strategy
+   - Fallback hierarchy for missing data
+   - Academic rigor: data-driven, not assumed
+
+2. **Hybrid Architecture**
+   - Agent-based modeling + ML predictions
+   - Time-stepped simulation + event-driven
+   - Scalable and realistic
+
+3. **Complete Supply Chain Coverage**
+   - From supplier to consumer
+   - Multi-agent coordination
+   - Quality monitoring (RSL tracking)
+
+4. **Publishable Results**
+   - Systematic integration methodology
+   - Validation against real datasets
+   - Open-source implementation
+
+**Potential Publications**:
+- Conference paper: "Integrating Real-World Data into Agent-Based Supply Chain Simulations"
+- Journal paper: "Data-Driven Digital Twin for Perishable Goods Logistics"
+
+---
+
+## Slide 23: System Capabilities
+
+**What the Digital Twin Can Do**:
+
+**Operational Insights**:
+- Track every truck in real-time (GPS + telemetry)
+- Monitor cargo quality throughout supply chain
+- Predict stockouts before they happen
+- Optimize fleet allocation dynamically
+
+**Scenario Testing**:
+- "What if it rains for 3 days straight?"
+- "What if demand spikes 50% during festival?"
+- "What if warehouse loses 30% of truck fleet?"
+- "What if supplier delivery is delayed 2 days?"
+
+**Performance Metrics**:
+- Service level per retailer
+- Inventory turnover rate
+- Truck utilization %
+- Average delivery time
+- Fuel efficiency
+- Spoilage rate
+
+**Visualization**:
+- Interactive map with live truck positions
+- Time-series charts (inventory, demand, fuel)
+- KPI dashboard cards
+- Event timeline (orders, accidents, deliveries)
+
+---
+
+## Slide 24: Demo Screenshots / Video
+
+**[INSERT]**: Screenshots or video of:
+1. Dashboard overview (map + KPIs)
+2. Truck detail panel (telemetry)
+3. Warehouse inventory view
+4. Retailer demand charts
+5. Analytics tab (time-series graphs)
+
+**Live Demo** (if possible):
+- Start simulation
+- Show trucks moving on map
+- Trigger weather change → observe effects
+- Show order placement → delivery flow
+
+---
+
+## Slide 25: Challenges & Solutions
+
+**Challenge 1: API Rate Limits**
+- **Problem**: OpenWeatherMap free tier = 1000 calls/day
+- **Solution**: Aggressive caching (30-min TTL) + reduce update frequency
+
+**Challenge 2: No Free Real-Time Traffic**
+- **Problem**: MapMyIndia costs $300/month
+- **Solution**: Train ML model on Uber historical data + NHAI closures
+
+**Challenge 3: Dataset Preprocessing**
+- **Problem**: Kaggle data needs weather tagging
+- **Solution**: Match each transaction with historical weather API
+
+**Challenge 4: Integration Complexity**
+- **Problem**: Don't break existing simulation
+- **Solution**: Phased rollout, keep simulated as fallback, comprehensive testing
+
+---
+
+## Slide 26: Timeline & Deliverables
+
+**Completed**:
+- ✅ Agent-based simulation (Warehouse, Retailer, Truck)
+- ✅ Environmental models (Weather, Traffic, Disruption)
+- ✅ Real-time dashboard (React + InfluxDB)
+- ✅ Dataset research & verification
+- ✅ Integration architecture design
+
+**In Progress**:
+- 🔄 PPT on agent behaviors (this presentation)
+- 🔄 Data services layer implementation
+
+**Next 5 Weeks**:
+- Week 1: Infrastructure setup
+- Week 2: Weather integration
+- Week 3: Demand model training
+- Week 4: Remaining services
+- Week 5: End-to-end testing
+
+**Future (After Real Data)**:
+- AI/ML model training
+- RL agent development
+- Publication preparation
+
+---
+
+## Slide 27: Conclusion
+
+**Summary**:
+- Built comprehensive agent-based supply chain simulation
+- Three autonomous agent types with realistic behaviors
+- Environmental models for weather, traffic, disruptions
+- Ready to transition from simulated to real-world data
+- All data sources verified and free
+
+**Key Achievements**:
+- Realistic agent interactions and decision-making
+- Complete order-to-delivery workflow
+- Quality monitoring (RSL tracking for perishables)
+- Real-time visualization and monitoring
+
+**Next Steps**:
+1. Implement data services layer
+2. Integrate real-world datasets
+3. Train ML models for prediction
+4. Validate end-to-end with real data
+5. Move to RL/AI integration
+
+**Vision**: A fully data-driven digital twin that mirrors real supply chain operations and enables AI-powered optimization!
+
+---
+
+## Slide 28: Questions?
+
+**Discussion Topics**:
+- Agent behavior details
+- Real-world data strategy
+- ML/RL integration approach
+- System scalability
+- Publication opportunities
+
+**Contact**: [Your Email]  
+**Code Repository**: [GitHub Link if applicable]  
+**Documentation**: [Project Docs Link]
+
+---
+
+## Appendix Slides (Optional)
+
+### A1: Configuration Management
+- All parameters in `simulation_config.yaml`
+- 600-line comprehensive configuration
+- Easy tuning without code changes
+
+### A2: Code Structure
+```
+FYP/
+├── src/simulation/
+│   ├── agents/ (Warehouse, Retailer, Truck)
+│   ├── models/ (Weather, Traffic, Demand)
+│   ├── entities/ (Truck, Driver, Order, Batch)
+│   ├── network/ (OSM road network)
+│   └── engine.py (Orchestrator)
+├── api/ (FastAPI backend)
+├── dashboard_v2/ (React frontend)
+└── config/ (YAML configurations)
+```
+
+### A3: Technology Stack
+- **Simulation**: Python 3.11
+- **Database**: InfluxDB (time-series)
+- **Message Broker**: MQTT (Mosquitto)
+- **Backend**: FastAPI
+- **Frontend**: React + Leaflet + Chart.js
+- **Orchestration**: Docker Compose
+
+### A4: Performance Metrics
+- Simulation speed: 10× real-time (configurable)
+- Time step: 1 minute (configurable)
+- 7-day simulation: ~700 seconds wall-clock time
+- Typical run: 15 agents, 50 trucks, 100K+ events
+
+---
+
+**END OF SLIDE OUTLINE**

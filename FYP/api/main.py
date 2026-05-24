@@ -99,7 +99,7 @@ async def health_check():
 
 
 # Import and register routers
-from routers import simulations, trucks, kpis, timeseries, events, dashboard
+from routers import simulations, trucks, kpis, timeseries, events, dashboard, ai_insights, scenarios
 
 app.include_router(simulations.router, prefix="/api", tags=["Simulations"])
 app.include_router(trucks.router, prefix="/api", tags=["Trucks"])
@@ -107,6 +107,8 @@ app.include_router(kpis.router, prefix="/api", tags=["KPIs"])
 app.include_router(timeseries.router, prefix="/api", tags=["Time Series"])
 app.include_router(events.router, prefix="/api", tags=["Events"])
 app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
+app.include_router(ai_insights.router, prefix="/api", tags=["AI Insights"])
+app.include_router(scenarios.router, prefix="/api", tags=["Scenarios"])
 
 
 if __name__ == "__main__":

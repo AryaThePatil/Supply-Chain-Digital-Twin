@@ -14,6 +14,9 @@ from scipy.spatial import KDTree
 
 from .road_segment import RoadSegment
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class RoadNetwork:
     """
@@ -47,16 +50,13 @@ class RoadNetwork:
         self._node_coords: List[List[float]] = []  # [[lat, lon], ...]
         self._node_ids: List[int] = []  # node IDs corresponding to coords
         
-        # Bounding box
         bbox = config['simulation']['location']['bounding_box']
         self.north = bbox['north']
         self.south = bbox['south']
         self.east = bbox['east']
         self.west = bbox['west']
         
-        print(f"[MAP]  RoadNetwork initialized for bounding box:")
-        print(f"   North: {self.north}, South: {self.south}")
-        print(f"   East: {self.east}, West: {self.west}")
+        logger.info(f"[MAP] RoadNetwork initialized for bounding box: N={self.north}, S={self.south}, E={self.east}, W={self.west}")
     
     def load(self, use_cache: bool = True) -> None:
         """
@@ -70,19 +70,38 @@ class RoadNetwork:
             use_cache: If True, use cached data if available
         """
         cache_file = self.cache_dir / f"osm_graph_{self.north}_{self.south}_{self.east}_{self.west}.pkl"
+        refined_cache_file = self.cache_dir / f"refined_network_{self.north}_{self.south}_{self.east}_{self.west}.pkl"
         
-        # Try to load from cache
+        # 1. Try to load from "Refined" cache (Fastest: has segments, neighbors, KDTree)
+        if use_cache and refined_cache_file.exists():
+            logger.info(f"[LOAD] Loading refined road network from cache: {refined_cache_file}")
+            try:
+                with open(refined_cache_file, 'rb') as f:
+                    data = pickle.load(f)
+                    self.graph = data['graph']
+                    self.segments = data['segments']
+                    self.segment_neighbors = data['segment_neighbors']
+                    self.nodes = data['nodes']
+                    self._node_kdtree = data['kdtree']
+                    self._node_ids = data['node_ids']
+                    self._node_coords = data['node_coords']
+                logger.info(f"[OK] Instantly loaded {len(self.segments)} segments and spatial index.")
+                return
+            except Exception as e:
+                logger.warning(f"Refined cache load failed: {e}. Falling back...")
+
+
+        # 2. Try to load from standard OSM cache
         if use_cache and cache_file.exists():
-            print(f"📦 Loading road network from cache: {cache_file}")
+            logger.info(f"[CACHE] Loading OSM graph from cache: {cache_file}")
             try:
                 with open(cache_file, 'rb') as f:
                     self.graph = pickle.load(f)
-                print(f"[OK] Loaded cached network")
-                # CRITICAL FIX: Build segments after loading graph
+                logger.info("[OK] Loaded cached graph. Building segments...")
                 self._build_segments()
+                self._save_refined_cache(refined_cache_file)
             except Exception as e:
-                print(f"[WARNING]  Cache load failed: {e}")
-                print(f"   Will try alternative loading methods...")
+                logger.warning(f"[WARNING] Cache load failed: {e}. Re-downloading...")
                 self.graph = None
         
         # Try to load from local file (PBF/OSM)
@@ -90,40 +109,37 @@ class RoadNetwork:
             local_file, large_file_detected = self._find_local_pbf_file()
             
             if local_file:
-                print(f"📂 Found local map file: {local_file}", flush=True)
-                print(f"   Attempting to load from file (this may take a moment)...", flush=True)
+                logger.info(f"[FILE] Found local map file: {local_file}")
+                logger.info(f"   Attempting to load from file (this may take a moment)...")
                 try:
                     # Try loading as XML (standard .osm)
                     self.graph = ox.graph_from_xml(local_file)
-                    print(f"[OK] Loaded road network from local file", flush=True)
+                    logger.info(f"[OK] Loaded road network from local file")
+
                     
                     # Build segments from loaded graph
                     self._build_segments()
                     
-                    # Save to cache for faster future loads
-                    try:
-                        with open(cache_file, 'wb') as f:
-                            pickle.dump(self.graph, f)
-                        print(f"   💾 Cached to: {cache_file}", flush=True)
-                    except Exception as e:
-                        print(f"   [WARNING]  Cache save failed: {e}", flush=True)
+                    # Save to refined cache for future instant loads
+                    self._save_refined_cache(refined_cache_file)
                         
                 except Exception as e:
                     print(f"[ERROR] Failed to load local file: {e}", flush=True)
                     raise
             
             elif large_file_detected:
-                print(f"\n[WARNING]  LARGE MAP FILE DETECTED (>200MB)", flush=True)
-                print(f"   Skipping local file to avoid memory crash.", flush=True)
-                print(f"   Will fall back to downloading specific bounding box from API.", flush=True)
+                logger.warning(f"[WARNING] LARGE MAP FILE DETECTED (>200MB)")
+                logger.warning(f"   Skipping local file to avoid memory crash.")
+                logger.warning(f"   Will fall back to downloading specific bounding box from API.")
                 # Fall through to API download logic
                 pass
 
         # Download from OSM API (Only if no local file found)
         if self.graph is None:
-            print(f"\n🌐 Downloading road network from OpenStreetMap API...", flush=True)
-            print(f"   Bounding box: N={self.north}, S={self.south}, E={self.east}, W={self.west}", flush=True)
-            print(f"   [TIME]  Estimated time: 2-5 minutes (one-time download)", flush=True)
+            logger.info(f"[OSM] Downloading road network from OpenStreetMap API...")
+            logger.info(f"   Bounding box: N={self.north}, S={self.south}, E={self.east}, W={self.west}")
+            logger.info(f"   [TIME] Estimated time: 2-5 minutes (one-time download)")
+
             
             try:
                 import time
@@ -140,14 +156,10 @@ class RoadNetwork:
                 elapsed = time.time() - start_time
                 print(f"\n[OK] Downloaded road network in {elapsed/60:.1f} minutes", flush=True)
                 
-                # Save to cache
-                print(f"   [Step 2/3] Saving to cache...", flush=True)
-                try:
-                    with open(cache_file, 'wb') as f:
-                        pickle.dump(self.graph, f)
-                    print(f"   💾 Cached to: {cache_file}", flush=True)
-                except Exception as e:
-                    print(f"   [WARNING]  Cache save failed: {e}", flush=True)
+                # Save to refined cache
+                print(f"   [Step 2/3] Building segments and saving refined cache...", flush=True)
+                self._build_segments()
+                self._save_refined_cache(refined_cache_file)
             
             except Exception as e:
                 print(f"\n[ERROR] Failed to download OSM data: {e}", flush=True)
@@ -185,7 +197,7 @@ class RoadNetwork:
             if file_path.exists():
                 size_mb = file_path.stat().st_size / (1024 * 1024)
                 if size_mb <= 200:
-                    print(f"📂 Using priority file: {filename} ({size_mb:.2f} MB)")
+                    print(f"[FILE] Using priority file: {filename} ({size_mb:.2f} MB)")
                     return str(file_path), False
                 else:
                     print(f"[WARNING]  Priority file {filename} is too large ({size_mb:.1f} MB), skipping")
@@ -217,7 +229,7 @@ class RoadNetwork:
                     print(f"[WARNING]  Skipping empty file: {file_path.name}")
                     continue
                     
-                print(f"📂 Using fallback file: {file_path.name} ({size_mb:.2f} MB)")
+                print(f"[FILE] Using fallback file: {file_path.name} ({size_mb:.2f} MB)")
                 return str(file_path), False
                 
         # If we didn't find a loadable .osm file but found a .pbf, we should treat it 
@@ -232,7 +244,7 @@ class RoadNetwork:
     
     def _build_segments(self) -> None:
         """Build RoadSegment entities from OSM graph."""
-        print(f"🔨 Building road segments...")
+        print(f"[BUILD] Building road segments...")
         
         # Extract node positions
         for node_id, data in self.graph.nodes(data=True):
@@ -245,7 +257,7 @@ class RoadNetwork:
         
         # Create RoadSegment for each edge
         total_edges = self.graph.number_of_edges()
-        print(f"   🔄 Processing {total_edges} edges...")
+        print(f"   [PROCESS] Processing {total_edges} edges...")
         
         segment_count = 0
         skipped_boundaries = 0
@@ -256,15 +268,9 @@ class RoadNetwork:
             # CRITICAL FIX: Filter out non-road features
             # ============================================
             
-            # Skip administrative boundaries (district/taluka borders, NOT roads!)
-            if 'boundary' in data:
-                boundary_type = data.get('boundary')
-                if boundary_type in ['administrative', 'political', 'census', 'postal_code']:
-                    skipped_boundaries += 1
-                    continue
-            
             # Safety: Skip non-driveable features that shouldn't be in network
-            if any(tag in data for tag in ['building', 'landuse', 'natural', 'leisure', 'amenity']):
+            # (But keep tags temporarily for zone detection if needed)
+            if any(tag in data for tag in ['building', 'boundary', 'natural', 'leisure']):
                 skipped_non_roads += 1
                 continue
             
@@ -277,17 +283,57 @@ class RoadNetwork:
             # End of filtering - process valid road
             # ============================================
             
+            # Standardized segment identifier
+            segment_id = f"{u}_{v}_{key}"
+            
             # Progress indicator every 5000 segments
             segment_count += 1
             if segment_count % 5000 == 0:
-                print(f"      Progress: {segment_count}/{total_edges} segments ({100*segment_count/total_edges:.1f}%)", flush=True)
-            
-            # Extract road properties from OSM data
-            segment_id = f"{u}_{v}_{key}"
+                logger.info(f"      Progress: {segment_count}/{total_edges} segments ({100*segment_count/total_edges:.1f}%)")
             
             # Length in meters (osmnx provides this)
             length_m = data.get('length', 0)
-            length_km = length_m / 1000.0
+            length_km = float(length_m) / 1000.0
+            
+            # ------------------------------------------------------------
+            # NAGPUR INTELLIGENT ZONING (NEW)
+            # ------------------------------------------------------------
+            # Determine zone based on GPS location and road type
+            start_lat = self.nodes[u]['lat']
+            start_lon = self.nodes[u]['lon']
+            end_lat = self.nodes[v]['lat']
+            end_lon = self.nodes[v]['lon']
+            avg_lat = (start_lat + end_lat) / 2
+            avg_lon = (start_lon + end_lon) / 2
+            
+            # Get road type for Highway detection
+            road_type = data.get('highway', 'residential')
+            if isinstance(road_type, list): road_type = road_type[0]
+            
+            zone_type = 'RESIDENTIAL'  # Default
+            zone_multiplier = 1.0       # Daily amplitude multiplier
+            
+            # 1. HIGHWAY DETECTION (Main Arterial Roads)
+            if road_type in ['motorway', 'trunk', 'primary', 'motorway_link', 'trunk_link']:
+                zone_type = 'HIGHWAY'
+                zone_multiplier = 1.2 # Constant high volume
+            
+            # 2. OFFICE ZONES (MIHAN SEZ & Civil Lines)
+            # MIHAN Area (South-West)
+            elif (21.05 <= avg_lat <= 21.10) and (79.04 <= avg_lon <= 79.08):
+                zone_type = 'OFFICE'
+                zone_multiplier = 1.5 # Extreme rush hour peaks
+            # Civil Lines Area (Center-West)
+            elif (21.14 <= avg_lat <= 21.16) and (79.05 <= avg_lon <= 79.08):
+                zone_type = 'OFFICE'
+                zone_multiplier = 1.4
+                
+            # 3. SHOPPING ZONES (Sitabuldi & Itwari Markets)
+            elif (21.14 <= avg_lat <= 21.16) and (79.08 <= avg_lon <= 79.12):
+                zone_type = 'SHOPPING'
+                zone_multiplier = 1.6 # High evening rush, massive on weekends
+            
+            # ------------------------------------------------------------
             
             # Road type (highway tag in OSM)
             road_type = self._classify_road_type(data.get('highway', 'unclassified'))
@@ -329,12 +375,12 @@ class RoadNetwork:
                         geometry_cumulative_distances = self._calculate_cumulative_distances(geometry)
                     except (ValueError, TypeError, AttributeError) as e:
                         # Geometry data structure errors
-                        print(f"      [WARNING] Failed to extract geometry for segment {segment_id} (data error): {type(e).__name__}")
+                        logger.warning(f"      [WARNING] Failed to extract geometry for segment {segment_id} (data error): {type(e).__name__}")
                         geometry = None
                         geometry_cumulative_distances = None
                     except Exception as e:
                         # Unexpected geometry extraction errors (fall back to linear)
-                        print(f"      [WARNING] Failed to extract geometry for segment {segment_id} (unexpected): {type(e).__name__}")
+                        logger.warning(f"      [WARNING] Failed to extract geometry for segment {segment_id} (unexpected): {type(e).__name__}")
                         geometry = None
                         geometry_cumulative_distances = None
                 else:
@@ -357,7 +403,9 @@ class RoadNetwork:
                 start_location=start_loc,
                 end_location=end_loc,
                 geometry=geometry,  # NEW
-                geometry_cumulative_distances=geometry_cumulative_distances  # NEW
+                geometry_cumulative_distances=geometry_cumulative_distances,  # NEW
+                zone_type=zone_type,
+                zone_multiplier=zone_multiplier
             )
             
             self.segments[(u, v, key)] = segment
@@ -374,10 +422,31 @@ class RoadNetwork:
         
         # Build adjacency list for fast neighbor lookup
         self._build_adjacency_list()
+        
+        # Build spatial index
+        self._build_spatial_index()
+
+    def _save_refined_cache(self, cache_path: Path):
+        """Save fully processed network data to cache."""
+        try:
+            cache_data = {
+                'graph': self.graph,
+                'segments': self.segments,
+                'segment_neighbors': self.segment_neighbors,
+                'nodes': self.nodes,
+                'kdtree': self._node_kdtree,
+                'node_ids': self._node_ids,
+                'node_coords': self._node_coords
+            }
+            with open(cache_path, 'wb') as f:
+                pickle.dump(cache_data, f)
+            print(f"   [SAVED] Refined network cached to: {cache_path}")
+        except Exception as e:
+            print(f"   [WARNING] Refined cache save failed: {e}")
 
     def _build_adjacency_list(self) -> None:
         """Pre-compute neighbors for all segments for O(1) lookup."""
-        print(f"🔗 Building segment adjacency list...")
+        print(f"[BUILD] Building segment adjacency list...")
         
         # Helper maps: node -> connected segments
         incoming_to_node = {} # segments ending at node
@@ -659,6 +728,9 @@ class RoadNetwork:
         Returns:
             RoadSegment or None if not found
         """
+        if not segment_id or not isinstance(segment_id, str):
+            return None
+            
         # Parse segment_id
         try:
             parts = segment_id.split('_')
@@ -666,7 +738,7 @@ class RoadNetwork:
             v = int(parts[1])
             key = int(parts[2])
             return self.segments.get((u, v, key))
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, AttributeError):
             return None
     
     def get_segment_by_nodes(self, u: int, v: int, key: int = 0) -> Optional[RoadSegment]:
@@ -707,7 +779,7 @@ class RoadNetwork:
         if self._node_kdtree is not None:
             return  # Already built
         
-        print("🔍 Building spatial index (KD-tree) for fast node lookups...")
+        print("[SPATIAL] Building spatial index (KD-tree) for fast node lookups...")
         
         # Extract all node coordinates and IDs from graph
         self._node_coords = []
@@ -723,51 +795,117 @@ class RoadNetwork:
         
         print(f"[OK] Spatial index built for {len(self._node_ids)} nodes")
     
-    def get_nearest_node(self, lat: float, lon: float) -> int:
+    def get_nearest_node(self, lat: float, lon: float) -> Optional[int]:
         """
-        Find nearest network node to given coordinates.
+        Find nearest node to coordinates using high-performance KDTree.
         
         Args:
             lat: Latitude
             lon: Longitude
-        
+            
         Returns:
-            Node ID of nearest node
+            Node ID (OSM ID)
         """
+        if self._node_kdtree is None:
+            # Lazy build if not present (should be built in initialize_road_network)
+            try:
+                self._build_spatial_index()
+            except Exception as e:
+                logger.error(f"Failed to build spatial index in get_nearest_node: {e}")
+                return None
+            
+        if self._node_kdtree is None:
+            return None
+            
         try:
-            return ox.distance.nearest_nodes(self.graph, lon, lat)
-        except ImportError:
-            # Fallback if scikit-learn is missing (common in minimal envs)
-            # Simple Euclidean distance search
-            min_dist = float('inf')
-            nearest_id = None
+            # Query KDTree (returns distance and index)
+            _, index = self._node_kdtree.query([lat, lon])
             
-            for node_id, data in self.graph.nodes(data=True):
-                # Calculate squared Euclidean distance (sufficient for comparison)
-                # Note: This is an approximation, but fine for small areas
-                d_lat = data['y'] - lat
-                d_lon = data['x'] - lon
-                dist_sq = d_lat*d_lat + d_lon*d_lon
-                
-                if dist_sq < min_dist:
-                    min_dist = dist_sq
-                    nearest_id = node_id
-            
-            return nearest_id
-    
-    def update_traffic(self, current_time: float) -> None:
+            # Mapping index back to OSM Node ID
+            return self._node_ids[index]
+        except Exception as e:
+            logger.error(f"Error querying KDTree: {e}")
+            return None
+
+    def get_adjacent_nodes(self, node_id: int) -> List[int]:
         """
-        Update traffic conditions on all segments.
+        Get all nodes adjacent to a given node in the graph.
         
-        Called every time step by simulation engine.
-        Updates traffic density and current speed for each segment.
+        Used by RL agents to determine available movement actions.
+        """
+        if self.graph is None:
+            return []
+        try:
+            return list(self.graph.neighbors(node_id))
+        except Exception as e:
+            logger.error(f"Error getting neighbors for node {node_id}: {e}")
+            return []
+
+    def get_segment_id_between(self, u: int, v: int) -> Optional[str]:
+        """
+        Get segment ID connecting node u to node v.
         
         Args:
-            current_time: Current simulation time in minutes
+            u: Start node ID
+            v: End node ID
         """
-        # This will be implemented when TrafficModel is created
-        # For now, segments maintain their default speeds
-        pass
+        if self.graph is None:
+            return None
+        try:
+            # Check edge data in graph
+            if self.graph.has_edge(u, v):
+                edge_data = self.graph.get_edge_data(u, v)
+                # If multiple parallel edges exist, pick the shortest as the primary segment
+                best_key = min(edge_data.keys(), key=lambda k: edge_data[k].get('length', float('inf')))
+                return edge_data[best_key].get('segment_id')
+        except Exception:
+            pass
+        return None
+    
+    def get_upstream_neighbors(self, segment_id: str) -> List[str]:
+        """
+        Identify segments that feed into the start of this segment.
+        
+        Used by the TrafficModel for Ripple Propagation (Backpressure).
+        
+        Args:
+            segment_id: Target segment ID
+            
+        Returns:
+            List of upstream segment IDs
+        """
+        # segment_id is formatted as "u_v_key"
+        if not segment_id or not isinstance(segment_id, str):
+            return []
+            
+        try:
+            parts = segment_id.split('_')
+            if len(parts) < 2: return []
+            u = int(parts[0])
+            
+            # Find all edges ending at node 'u'
+            upstream_segments = []
+            if self.graph.has_node(u):
+                # In-edges of node 'u' are upstream of the segment u->v
+                for pre_u, _, key, data in self.graph.in_edges(u, keys=True, data=True):
+                    up_id = data.get('segment_id', f"{pre_u}_{u}_{key}")
+                    upstream_segments.append(up_id)
+            return upstream_segments
+        except (ValueError, IndexError):
+            return []
+
+    def update_traffic(self, traffic_model: Any, current_time: float, active_accidents: Optional[List] = None, trucks: Optional[List] = None) -> None:
+        """
+        Update traffic conditions on all segments using the provided model.
+        
+        Args:
+            traffic_model: The LTM TrafficModel instance
+            current_time: Current simulation time in minutes
+            active_accidents: Optional list of current accidents
+            trucks: Optional list of TruckAgent objects for lazy segment updates
+        """
+        if traffic_model:
+            traffic_model.update_smart(self, trucks or [], current_time, active_accidents=active_accidents)
     
     def get_stats(self) -> Dict[str, Any]:
         """

@@ -1,455 +1,380 @@
 """
-Traffic simulation model using Greenshields model.
+Linked Traffic Model (LTM) using Continuous Gaussian Waves and Ripple Propagation.
 
-Simulates realistic traffic density and speed on road segments based on:
-- Time of day (rush hours)
-- Road type (capacity varies)
-- Weather conditions
-- Night driving effects
+Simulates high-fidelity traffic density and speed based on:
+- Location-Specific Zones (OFFICE, SHOPPING, RESIDENTIAL, HIGHWAY)
+- Continuous Time Waves (Gaussian Mixture Models)
+- Factor Linkage (Weather, Weekday, Seasonal shifts)
+- Upstream Backpressure (Ripple Propagation for accidents/congestion)
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 import math
+import logging
+from datetime import datetime, timedelta
 
+logger = logging.getLogger(__name__)
 
 class TrafficModel:
     """
-    Traffic simulation using Greenshields model.
+    High-Fidelity Linked Traffic Model (LTM).
     
-    Greenshields model: speed = free_flow_speed × (1 - density / jam_density)
-    
-    Traffic density varies by:
-    - Time of day (rush hours have higher density)
-    - Road type (different base densities)
-    - Weather (rain increases cautious spacing)
-    - Night (reduced visibility)
+    Density(s, t) = Base(s) * Wave(t, zone) * WeatherFactor * WeekDayFactor + Ripple(s)
+    Speed(s, t) = FreeFlow * (1 - Density/JamDensity) * WeatherReduction * NightReduction
     """
     
     def __init__(self, config: Dict[str, Any]):
-        """
-        Initialize traffic model.
-        
-        Args:
-            config: Configuration dictionary with traffic parameters
-        """
+        """Initialize the Linked Traffic Model."""
         self.config = config
         self.traffic_config = config.get('traffic', {})
         
-        # Lane-based capacity and jam density
-        self.capacity_per_lane = self.traffic_config.get('capacity_per_lane', {})
-        self.jam_density_per_lane = self.traffic_config.get('jam_density_per_lane', {})
+        # Physical Parameters
+        self.jam_density_per_lane = self.traffic_config.get('jam_density_per_lane', {
+            'motorway': 120, 'trunk': 110, 'primary': 100, 
+            'secondary': 90, 'tertiary': 80, 'residential': 60
+        })
+        self.base_density_fraction = self.traffic_config.get('base_density_fraction', {
+            'motorway': 0.15, 'trunk': 0.12, 'primary': 0.10,
+            'secondary': 0.08, 'tertiary': 0.06, 'residential': 0.05
+        })
         
-        # Base density fractions by road type
-        self.base_density_fraction = self.traffic_config.get('base_density_fraction', {})
+        # Zone-Specific Peak Hour Coefficients (μ: Peak Hour, σ: Spread)
+        self.office_peaks = [(9.0, 1.2), (18.5, 1.5)]  # Sharp peaks for commute
+        self.shopping_peaks = [(19.5, 2.5)]            # Broad evening peak
+        self.residential_peaks = [(8.5, 1.0), (19.0, 1.2)] # Morning exit, Evening return
+        self.highway_peaks = [(14.0, 4.0)]             # Steady through-traffic
         
-        # Time-of-day multipliers (24 hours)
-        self.time_multipliers = self.traffic_config.get('time_of_day_multipliers', [1.0] * 24)
+        # Factor Coupling constants
+        self.sunday_multiplier = 1.3
+        self.monsoon_sigma_stretch = 1.5 # Rains broaden the peak hours
         
-        # Weather effects
-        self.weather_speed_reduction = self.traffic_config.get('weather_speed_reduction', {})
-        self.weather_density_increase = self.traffic_config.get('weather_density_increase', {})
+        # Propagation State (Backpressure)
+        self.current_ripples: Dict[str, float] = {} # segment_id -> density_ripple
+        self.propagation_decay = 0.6               # Ripple decays 40% per hop
         
-        # Night driving
-        self.night_speed_reduction = self.traffic_config.get('night_speed_reduction', 0.95)
-        
-        # Current weather state (will be set by WeatherModel)
+        # Environmental state
         self.current_weather = 'clear'
+        self.current_month = 1 # Jan
+        self.night_speed_reduction = self.traffic_config.get('night_speed_reduction', 0.90)
         
-        # OPTIMIZATION 1: Traffic zone caching
-        self.truck_zone_cache = {}  # truck_id -> current_segment_id
-        self.zone_last_update = {}  # segment_id -> last_update_time
-        self.ZONE_CACHE_TTL = 5.0  # minutes - zones stay cached for 5 minutes
-        self.zone_speed_cache = {}  # segment_id -> (speed, time)
+        # Performance Cache (segment_id -> RoadSegment) - Sync'd during update
+        self._segment_cache: Dict[str, Any] = {}
         
-        print(f"🚦 TrafficModel initialized")
-        print(f"   Greenshields model with lane-based capacity")
-        print(f"   Time-of-day patterns: {len(self.time_multipliers)} hours")
-        print(f"   Zone caching enabled (TTL: {self.ZONE_CACHE_TTL} min)")
-    
-    def set_weather(self, weather_state: str) -> None:
-        """
-        Set current weather state.
+        # Temporal Ripple Persistence (The 'Unwinding' effect)
+        # 1.0 = persists forever, 0.0 = vanishes instantly
+        self.persistence_factor = 0.85 # ~15% decay per tick (clears in ~15-20 min)
         
-        Called by WeatherModel when weather changes.
-        
-        Args:
-            weather_state: Weather state (clear, light_rain, rain, heavy_rain, fog)
-        """
-        self.current_weather = weather_state
-    
-    def initialize_network(self, road_network, start_time: float) -> None:
-        """
-        Initialize traffic state for ALL segments at simulation start.
-        
-        This ensures every segment has realistic initial traffic data.
-        Called once during simulation startup.
-        
-        Args:
-            road_network: RoadNetwork instance
-            start_time: Starting simulation time in minutes
-        """
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        logger.info(f"Initializing traffic for {len(road_network.segments)} segments...")
-        
-        # Initialize all segments with realistic traffic
-        for segment_key, segment in road_network.segments.items():
-            if not segment.is_blocked:
-                density = self.get_traffic_density(segment, start_time)
-                speed = self.get_current_speed(segment, start_time)
-                segment.update_traffic(density, speed)
-            else:
-                segment.update_traffic(0.0, 0.0)
-        
-        logger.info("Traffic initialization complete")
-    
-    def get_traffic_density(self, road_segment, current_time: float) -> float:
-        """
-        Calculate traffic density for a road segment.
-        
-        Density in vehicles per km per lane.
-        
-        Args:
-            road_segment: RoadSegment instance
-            current_time: Current simulation time in minutes
-        
-        Returns:
-            Traffic density (vehicles/km/lane)
-        """
-        road_type = road_segment.road_type
-        lanes = road_segment.lanes
-        
-        # Get base density fraction for this road type
-        base_fraction = self.base_density_fraction.get(road_type, 0.35)
-        
-        # Get capacity for this road type
-        capacity = self.capacity_per_lane.get(road_type, 30)
-        
-        # Calculate base density
-        base_density = base_fraction * capacity
-        
-        # Apply time-of-day multiplier
-        hour_of_day = int((current_time / 60) % 24)
-        time_multiplier = self.time_multipliers[hour_of_day]
-        
-        # Apply weather density increase (people drive more cautiously)
-        weather_multiplier = self.weather_density_increase.get(self.current_weather, 1.0)
-        
-        # Calculate final density
-        density = base_density * time_multiplier * weather_multiplier
-        
-        # Clamp to jam density
-        jam_density = self.jam_density_per_lane.get(road_type, 100)
-        density = min(density, jam_density)
-        
-        return density
-    
-    def get_current_speed(self, road_segment, current_time: float) -> float:
-        """
-        Calculate current speed on road segment using Greenshields model.
-        
-        speed = free_flow_speed × (1 - density / jam_density)
-        
-        Also applies weather and night effects.
-        
-        Args:
-            road_segment: RoadSegment instance
-            current_time: Current simulation time in minutes
-        
-        Returns:
-            Current speed in km/h
-        """
-        # Get traffic density
-        density = self.get_traffic_density(road_segment, current_time)
-        
-        # Get jam density
-        jam_density = self.jam_density_per_lane.get(road_segment.road_type, 100)
-        
-        # Greenshields model
-        free_flow_speed = road_segment.speed_limit_kmh
-        density_ratio = density / jam_density if jam_density > 0 else 0
-        speed = free_flow_speed * (1.0 - density_ratio)
-        
-        # Apply weather speed reduction
-        weather_reduction = self.weather_speed_reduction.get(self.current_weather, 1.0)
-        speed *= weather_reduction
-        
-        # Apply night driving reduction (10pm - 6am)
-        hour_of_day = int((current_time / 60) % 24)
-        if hour_of_day >= 22 or hour_of_day < 6:
-            speed *= self.night_speed_reduction
-        
-        # Ensure speed is positive and doesn't exceed speed limit
-        speed = max(1.0, min(speed, road_segment.speed_limit_kmh))
-        
-        return speed
-    
-    def update_segment(self, road_segment, current_time: float) -> None:
-        """
-        Update traffic conditions on a road segment.
-        
-        Called for each segment during simulation update.
-        
-        Args:
-            road_segment: RoadSegment instance to update
-            current_time: Current simulation time in minutes
-        """
-        # Skip if segment is blocked
-        if road_segment.is_blocked:
-            road_segment.current_traffic_density = 0.0
-            road_segment.current_speed_kmh = 0.0
-            return
-        
-        # Calculate density and speed
-        density = self.get_traffic_density(road_segment, current_time)
-        speed = self.get_current_speed(road_segment, current_time)
-        
-        # Update segment
-        road_segment.update_traffic(density, speed)
-    
-    def update_smart(self, road_network, trucks, current_time: float) -> None:
-        """
-        Smart zone-based traffic update - CACHE-OPTIMIZED VERSION.
-        
-        Uses intelligent caching to minimize redundant calculations:
-        1. Tracks which zones each truck is in
-        2. Only recalculates when truck moves to new zone OR data is stale (TTL)
-        3. Maintains background updates for global traffic patterns
-        
-        This achieves 50-100x speedup while maintaining traffic realism.
-        
-        Args:
-            road_network: RoadNetwork instance
-            trucks: List of TruckAgent instances
-            current_time: Current simulation time in minutes
-        """
-        # Step 1: Identify active zones with cache optimization
-        active_zones = set()
-        zones_to_update = set()
-        
-        for truck_agent in trucks:
-            truck = truck_agent.truck if hasattr(truck_agent, 'truck') else truck_agent
-            
-            # Only consider trucks that are moving
-            if truck.status != 'in_transit':
-                continue
-            
-            # Get current segment (primary zone)
-            current_segment_id = None
-            if hasattr(truck, 'current_route') and truck.current_route:
-                route = truck.current_route
-                if 'segment_objects' in route and len(route['segment_objects']) > 0:
-                    # Get truck's current segment from route
-                    if hasattr(truck_agent, 'current_segment_index'):
-                       idx = truck_agent.current_segment_index
-                    elif hasattr(truck, 'current_segment_index'):
-                        idx = truck.current_segment_index
-                    else:
-                        idx = 0
-                    
-                    if 0 <= idx < len(route['segment_objects']):
-                        segment = route['segment_objects'][idx]
-                        if hasattr(segment, 'segment_id'):
-                            current_segment_id = segment.segment_id
-            
-            if not current_segment_id:
-                continue
-            
-            truck_id = truck.truck_id
-            active_zones.add(current_segment_id)
-            
-            # Check if truck moved to new zone OR zone data is stale
-            needs_update = False
-            
-            # Check 1: Did truck change zones?
-            if truck_id not in self.truck_zone_cache:
-                needs_update = True
-                self.truck_zone_cache[truck_id] = current_segment_id
-            elif self.truck_zone_cache[truck_id] != current_segment_id:
-                needs_update = True
-                self.truck_zone_cache[truck_id] = current_segment_id
-            
-            # Check 2: Is zone data stale (TTL expired)?
-            if current_segment_id not in self.zone_last_update:
-                needs_update = True
-            elif (current_time - self.zone_last_update[current_segment_id]) >= self.ZONE_CACHE_TTL:
-                needs_update = True
-            
-            if needs_update:
-                zones_to_update.add(current_segment_id)
-        
-        # Step 2: Update only zones that need it (truck moved or stale data)
-        for seg_id in zones_to_update:
-            if seg_id in road_network.segments:
-                segment = road_network.segments[seg_id]
-                if not segment.is_blocked:
-                    density = self.get_traffic_density(segment, current_time)
-                    speed = self.get_current_speed(segment, current_time)
-                    segment.update_traffic(density, speed)
-                    self.zone_last_update[seg_id] = current_time
-                else:
-                    segment.update_traffic(0.0, 0.0)
-                    self.zone_last_update[seg_id] = current_time
-        
-        # Step 3: Periodic background update (every 30 minutes)
-        # This maintains global traffic patterns for routing to new areas
-        if current_time % 30 == 0 and current_time > 0:
-            # Sample 10% of inactive segments to keep patterns fresh
-            inactive_segment_ids = []
-            for seg_id in road_network.segments.keys():
-                if seg_id not in active_zones:
-                    inactive_segment_ids.append(seg_id)
-            
-            # Update every 10th inactive segment
-            for i in range(0, len(inactive_segment_ids), 10):
-                seg_id = inactive_segment_ids[i]
-                segment = road_network.segments[seg_id]
-                if not segment.is_blocked:
-                    density = self.get_traffic_density(segment, current_time)
-                    speed = self.get_current_speed(segment, current_time)
-                    segment.update_traffic(density, speed)
-                    self.zone_last_update[seg_id] = current_time
-    
-    def update_all_segments(self, road_network, current_time: float) -> None:
-        """
-        Update traffic on all segments in network.
-        
-        Called by simulation engine every time step.
-        Applies spatial smoothing to maintain traffic flow conservation.
-        
-        Args:
-            road_network: RoadNetwork instance
-            current_time: Current simulation time in minutes
-        """
-        # First pass: Calculate raw density and speed for all segments
-        raw_densities = {}
-        raw_speeds = {}
-        
-        for segment_key, segment in road_network.segments.items():
-            if not segment.is_blocked:
-                density = self.get_traffic_density(segment, current_time)
-                speed = self.get_current_speed(segment, current_time)
-                raw_densities[segment_key] = density
-                raw_speeds[segment_key] = speed
-            else:
-                raw_densities[segment_key] = 0.0
-                raw_speeds[segment_key] = 0.0
-        
-        # Second pass: Apply spatial smoothing for flow conservation
-        # Smooth density with neighboring segments to avoid unrealistic jumps
-        smoothed_densities = self._apply_spatial_smoothing(
-            road_network, raw_densities, smoothing_factor=0.3
-        )
-        
-        # Third pass: Update segments with smoothed values
-        for segment_key, segment in road_network.segments.items():
-            if not segment.is_blocked:
-                smoothed_density = smoothed_densities.get(segment_key, raw_densities[segment_key])
-                
-                # Recalculate speed based on smoothed density
-                jam_density = self.jam_density_per_lane.get(segment.road_type, 100)
-                free_flow_speed = segment.speed_limit_kmh
-                density_ratio = smoothed_density / jam_density if jam_density > 0 else 0
-                speed = free_flow_speed * (1.0 - density_ratio)
-                
-                # Apply weather and night effects
-                weather_reduction = self.weather_speed_reduction.get(self.current_weather, 1.0)
-                speed *= weather_reduction
-                
-                hour_of_day = int((current_time / 60) % 24)
-                if hour_of_day >= 22 or hour_of_day < 6:
-                    speed *= self.night_speed_reduction
-                
-                speed = max(1.0, min(speed, segment.speed_limit_kmh))
-                
-                segment.update_traffic(smoothed_density, speed)
-            else:
-                segment.update_traffic(0.0, 0.0)
-    
-    def _apply_spatial_smoothing(self, road_network, densities: Dict, 
-                                 smoothing_factor: float = 0.3) -> Dict:
-        """
-        Apply spatial smoothing to traffic densities for flow conservation.
-        
-        Smooths density values with neighboring segments to avoid unrealistic
-        density jumps and maintain approximate flow conservation.
-        
-        Args:
-            road_network: RoadNetwork instance
-            densities: Dictionary of {segment_key: density}
-            smoothing_factor: Weight for neighbors (0.0 = no smoothing, 1.0 = full averaging)
-        
-        Returns:
-            Dictionary of smoothed densities
-        """
-        smoothed = {}
-        
-        for segment_key, segment in road_network.segments.items():
-            current_density = densities.get(segment_key, 0.0)
-            
-            # Find neighboring segments (O(1) lookup)
-            neighbors = road_network.get_segment_neighbors(segment_key)
-            
-            # Calculate smoothed density
-            if neighbors:
-                neighbor_densities = [densities.get(nkey, 0.0) for nkey in neighbors]
-                avg_neighbor_density = sum(neighbor_densities) / len(neighbor_densities)
-                
-                # Weighted average: current density + neighbor average
-                smoothed_density = (1.0 - smoothing_factor) * current_density + \
-                                  smoothing_factor * avg_neighbor_density
-            else:
-                # No neighbors, keep original
-                smoothed_density = current_density
-            
-            smoothed[segment_key] = smoothed_density
-        
-        return smoothed
-    
-    def get_stats(self, road_network) -> Dict[str, Any]:
-        """
-        Get traffic statistics across network.
-        
-        Args:
-            road_network: RoadNetwork instance
-        
-        Returns:
-            Dictionary with traffic stats
-        """
-        total_segments = len(road_network.segments)
-        if total_segments == 0:
-            return {}
-        
-        # Calculate average density and speed by road type
-        stats_by_type = {}
-        
-        for segment in road_network.segments.values():
-            road_type = segment.road_type
-            
-            if road_type not in stats_by_type:
-                stats_by_type[road_type] = {
-                    'count': 0,
-                    'total_density': 0.0,
-                    'total_speed': 0.0,
-                    'blocked_count': 0
-                }
-            
-            stats_by_type[road_type]['count'] += 1
-            stats_by_type[road_type]['total_density'] += segment.current_traffic_density
-            stats_by_type[road_type]['total_speed'] += segment.current_speed_kmh
-            if segment.is_blocked:
-                stats_by_type[road_type]['blocked_count'] += 1
-        
-        # Calculate averages
-        for road_type, stats in stats_by_type.items():
-            count = stats['count']
-            stats['avg_density'] = round(stats['total_density'] / count, 2)
-            stats['avg_speed'] = round(stats['total_speed'] / count, 2)
-            del stats['total_density']
-            del stats['total_speed']
-        
-        return {
-            'current_weather': self.current_weather,
-            'by_road_type': stats_by_type
+        # Seasonal trend multipliers (Jan=1, Dec=12)
+        self.seasonal_multipliers = {
+            1: 0.95, 2: 0.95, 3: 1.0, 4: 1.1, 
+            5: 1.25, 6: 1.15, 7: 1.1, 8: 1.1, 
+            9: 1.05, 10: 1.0, 11: 0.95, 12: 0.9
         }
+        
+        logger.info("[LTM] Linked Traffic Model initialized with Gaussian Engine")
+
+    def set_environment(self, weather_state: str, month: int) -> None:
+        """Set current environment state (called by Engine/WeatherModel)."""
+        self.current_weather = weather_state
+        self.current_month = month
+
+    def initialize_network(self, road_network, current_time: float) -> None:
+        """Initialize traffic for the entire network at start-up."""
+        logger.info(f"Initializing LTM state for {len(road_network.segments)} segments...")
+        self.update_all_segments(road_network, current_time, active_accidents=[])
+
+    def get_traffic_density(self, segment, current_time_minutes: float) -> float:
+        """Calculate MTI-based density for a segment with Lane-Aware Capacity."""
+        hour = (current_time_minutes / 60.0) % 24
+        
+        # 1. Base Density from Road Type
+        road_type = segment.road_type
+        if isinstance(road_type, list): road_type = road_type[0]
+        base_fraction = self.base_density_fraction.get(road_type, 0.1)
+        
+        # 2. Robust Weekday logic and Zone Multipliers
+        # Use start_date (YYYY-MM-DD) from config — not start_time which doesn't exist.
+        start_date_str = self.config.get('simulation', {}).get('start_date', '2024-01-01')
+        try:
+            start_dt = datetime.strptime(start_date_str, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            start_dt = datetime(2024, 1, 1)
+             
+        current_dt = start_dt + timedelta(minutes=current_time_minutes)
+        is_weekend = current_dt.weekday() >= 5 # 5=Sat, 6=Sun
+        
+        zone = segment.zone_type
+        factor_mult = 1.0
+        
+        # Nagpur Realistic Weekend Patterns
+        if is_weekend:
+            if zone == 'OFFICE': factor_mult *= 0.3 # 70% drop on weekends
+            elif zone == 'SHOPPING': factor_mult *= 1.4 # 40% boost (market days)
+            elif zone == 'RESIDENTIAL': factor_mult *= 1.1 # Stay home boost
+        
+        # 3. Continuous Gaussian Wave (Location + Time)
+        wave_val = self._calculate_continuous_wave(hour, zone, is_weekend)
+        
+        # 4. Factor Coupling (Weather + Seasonal)
+        weather_inc = self.config.get('traffic', {}).get('weather_density_increase', {}).get(self.current_weather, 1.0)
+        factor_mult *= weather_inc
+        factor_mult *= self.seasonal_multipliers.get(self.current_month, 1.0)
+        
+        # 5. Ripple Pass (Backpressure)
+        # SCIENTIFIC FIX: Standardized on segment_id (string)
+        ripple = self.current_ripples.get(segment.segment_id, 0.0)
+        
+        # Final Density Score (MTI): Lane-Aware Physics
+        density_fraction = base_fraction * wave_val * segment.zone_multiplier * factor_mult
+        
+        # Correctly multiply by number of lanes
+        total_jam_density = self.jam_density_per_lane.get(road_type, 100) * max(1, segment.lanes)
+        
+        density = (density_fraction * total_jam_density) + ripple
+        return max(0.1, min(density, total_jam_density * 0.98))
+
+    def _calculate_continuous_wave(self, hour: float, zone: str, is_weekend: bool = False) -> float:
+        """Calculate zone-specific Gaussian mixture wave."""
+        
+        # Nagpur Realistic Weekend: OFFICE zones have flat baseline traffic (no commute peaks)
+        if is_weekend and zone == 'OFFICE':
+            return 0.2  # Flat baseline
+            
+        peaks = []
+        if zone == 'OFFICE': peaks = self.office_peaks
+        elif zone == 'SHOPPING': peaks = self.shopping_peaks
+        elif zone == 'RESIDENTIAL': peaks = self.residential_peaks
+        elif zone == 'HIGHWAY': peaks = self.highway_peaks
+        else: peaks = [(14.0, 4.0)]
+        
+        sigma_mult = 1.0
+        if self.current_weather in ['rain', 'heavy_rain']:
+            sigma_mult = self.monsoon_sigma_stretch
+            
+        total = 0.2 
+        for mu, sigma in peaks:
+            sigma_eff = sigma * sigma_mult
+            diff = abs(hour - mu)
+            diff = min(diff, 24 - diff)
+            pulse = math.exp(-(diff**2) / (2 * sigma_eff**2))
+            total = max(total, pulse * 1.5)
+            
+        return total
+
+    def get_current_speed(self, segment, current_time: float) -> float:
+        """Calculate speed using Parabolic Greenshields model (Scientific Plateau)."""
+        density = segment.current_traffic_density
+        road_type = segment.road_type
+        if isinstance(road_type, list): road_type = road_type[0]
+        
+        total_jam_density = self.jam_density_per_lane.get(road_type, 100) * max(1, segment.lanes)
+        
+        # Normalized Density (0.0 to 1.0)
+        k = density / total_jam_density if total_jam_density > 0 else 0
+        
+        # 1. Parabolic Plateau: Speed stays high until ~20% density
+        # Formula: Speed = V_free * (1 - k^2) if k > 0.2 else V_free
+        free_flow = segment.speed_limit_kmh
+        if k < 0.2:
+            speed = free_flow
+        else:
+            # Accelerated drop after critical density plateau
+            speed = free_flow * (1.0 - (k**2))
+        
+        # 2. Weather & Night Reduction
+        weather_red = self.config.get('traffic', {}).get('weather_speed_reduction', {}).get(self.current_weather, 1.0)
+        speed *= weather_red
+        
+        hour = (current_time / 60.0) % 24
+        if hour >= 22 or hour < 6:
+            speed *= self.night_speed_reduction
+            
+        return max(2.5, min(speed, free_flow))
+
+    def update_all_segments(self, road_network, current_time: float, active_accidents: Optional[List] = None) -> None:
+        """
+        Full-network traffic update: iterates all segments for density + BFS propagation.
+
+        Used by initialize_network() at startup and kept for backward compatibility
+        with existing tests. During normal simulation ticks, update_smart() is called
+        instead (O(active_ripples) vs O(N_segments)).
+        """
+        # Step 0: Apply Temporal Decay
+        for seg_id in list(self.current_ripples.keys()):
+            self.current_ripples[seg_id] *= self.persistence_factor
+            if self.current_ripples[seg_id] < 1.0:
+                 self.current_ripples.pop(seg_id, None)
+        
+        # Step 1: Baseline pass
+        new_ripple_sources: Dict[str, float] = {}
+        # SAFETY: Ensure accidents list is iterable
+        accidents_list = active_accidents if active_accidents is not None else []
+        accident_map = {a.segment_id: a for a in accidents_list}
+        
+        # Rebuild segment cache for O(1) BFS lookups
+        self._segment_cache = {str(s.segment_id): s for s in road_network.segments.values()}
+        
+        # IMPORTANT: Iterate segment items (keys are Tuples) but use segment_id (String) for model state
+        for key, segment in road_network.segments.items():
+            s_id = str(segment.segment_id)
+            base_density = self.get_traffic_density(segment, current_time)
+            road_type = segment.road_type
+            if isinstance(road_type, list): road_type = road_type[0]
+            
+            total_jam_density = self.jam_density_per_lane.get(str(road_type), 100) * max(1, segment.lanes)
+            
+            accident = accident_map.get(s_id)
+            if segment.is_blocked or (base_density / total_jam_density) > 0.7 or accident:
+                severity_mult = 1.0
+                if accident:
+                    severity_mult = {'minor': 1.5, 'moderate': 2.5, 'severe': 4.5}.get(str(accident.severity), 2.5)
+                
+                ripple_val = (base_density * 0.7 * severity_mult) if (segment.is_blocked or accident) else (base_density * 0.3)
+                new_ripple_sources[s_id] = min(ripple_val, total_jam_density * 1.5)
+            
+            segment.current_traffic_density = base_density
+
+        # Step 2: Multi-Hop BFS Propagation (Type-Aware Depth)
+        for source_id, pressure in new_ripple_sources.items():
+            # SCIENTIFIC FIX: O(1) Cache Lookup
+            source_seg = self._segment_cache.get(source_id)
+            if not source_seg: continue
+            
+            # Highways get deeper propagation (7 hops) vs City streets (3-4 hops)
+            max_depth = 7 if ('motorway' in source_seg.road_type or 'trunk' in source_seg.road_type) else 3
+            
+            queue = [(source_id, pressure * self.propagation_decay, 1)]
+            visited = {source_id}
+            
+            while queue:
+                curr_id, curr_pressure, depth = queue.pop(0)
+                if depth > max_depth or curr_pressure < 1.0:
+                    continue
+                
+                feeders = road_network.get_upstream_neighbors(curr_id)
+                for f_id in feeders:
+                    f_seg = self._segment_cache.get(f_id)
+                    if not f_seg: continue
+                    
+                    road_type_f = f_seg.road_type
+                    if isinstance(road_type_f, list): road_type_f = road_type_f[0]
+                    jam_f = self.jam_density_per_lane.get(str(road_type_f), 100) * max(1, f_seg.lanes)
+                    
+                    # SCIENTIFIC FIX (S6): Clamp ripple to 1.5x jam density to prevent "super-congestion"
+                    max_ripple_f = jam_f * 1.5
+                    clamped_pressure = min(curr_pressure, max_ripple_f)
+                    
+                    if f_id not in visited:
+                        self.current_ripples[f_id] = max(self.current_ripples.get(f_id, 0.0), clamped_pressure)
+                        visited.add(f_id)
+                        queue.append((f_id, clamped_pressure * self.propagation_decay, depth + 1))
+
+        # Step 3: All-segment finalization
+        for seg_id_tuple, segment in road_network.segments.items():
+            # Correctly use standardized string segment_id for lookup
+            s_id = str(segment.segment_id)
+            ripple = self.current_ripples.get(s_id, 0.0)
+            road_type = segment.road_type
+            if isinstance(road_type, list): road_type = road_type[0]
+            
+            total_jam_density = self.jam_density_per_lane.get(str(road_type), 100) * max(1, segment.lanes)
+            
+            segment.current_traffic_density = min(segment.current_traffic_density + ripple, total_jam_density * 0.98)
+            segment.current_speed_kmh = self.get_current_speed(segment, current_time)
+
+    def _run_surgical_bfs(self, road_network, accident_seg_ids: List[str], current_time: float) -> None:
+        """
+        BFS ripple propagation restricted to accident zones only.
+        
+        Starts BFS from the provided accident segment IDs and propagates upstream
+        pressure using type-aware depth limits read from config.
+        """
+        bfs_max_depth_highway = self.traffic_config.get('bfs_max_depth_highway', 7)
+        bfs_max_depth_city = self.traffic_config.get('bfs_max_depth_city', 3)
+        ripple_min_pressure = self.traffic_config.get('ripple_min_pressure', 1.0)
+
+        # Rebuild segment cache for O(1) BFS lookups
+        self._segment_cache = {str(s.segment_id): s for s in road_network.segments.values()}
+
+        for source_id in accident_seg_ids:
+            source_seg = self._segment_cache.get(source_id)
+            if not source_seg:
+                continue
+
+            road_type = source_seg.road_type
+            if isinstance(road_type, list):
+                road_type = road_type[0]
+
+            # Compute pressure for this accident source
+            base_density = self.get_traffic_density(source_seg, current_time)
+            total_jam_density = self.jam_density_per_lane.get(road_type, 100) * max(1, source_seg.lanes)
+            severity_mult = 2.5  # default moderate
+            pressure = min(base_density * 0.7 * severity_mult, total_jam_density * 1.5)
+
+            max_depth = bfs_max_depth_highway if ('motorway' in road_type or 'trunk' in road_type) else bfs_max_depth_city
+
+            queue = [(source_id, pressure * self.propagation_decay, 1)]
+            visited = {source_id}
+
+            while queue:
+                curr_id, curr_pressure, depth = queue.pop(0)
+                if depth > max_depth or curr_pressure < ripple_min_pressure:
+                    continue
+
+                feeders = road_network.get_upstream_neighbors(curr_id)
+                for f_id in feeders:
+                    f_seg = self._segment_cache.get(f_id)
+                    if not f_seg:
+                        continue
+
+                    road_type_f = f_seg.road_type
+                    if isinstance(road_type_f, list):
+                        road_type_f = road_type_f[0]
+                    jam_f = self.jam_density_per_lane.get(str(road_type_f), 100) * max(1, f_seg.lanes)
+                    max_ripple_f = jam_f * 1.5
+                    clamped_pressure = min(curr_pressure, max_ripple_f)
+
+                    if f_id not in visited:
+                        self.current_ripples[f_id] = max(self.current_ripples.get(f_id, 0.0), clamped_pressure)
+                        visited.add(f_id)
+                        queue.append((f_id, clamped_pressure * self.propagation_decay, depth + 1))
+
+    def update_smart(self, road_network, trucks, current_time: float, active_accidents: Optional[List] = None) -> None:
+        """
+        Turbo tick: O(active_ripples + active_accidents × BFS_depth) instead of O(N_segments).
+
+        Three steps:
+        1. Decay existing ripples (O(active_ripples))
+        2. Surgical BFS only for accident zones (skipped when no accidents)
+        3. Lazy density/speed update only for segments trucks are currently on
+        """
+        accidents_list = active_accidents if active_accidents is not None else []
+        ripple_min_pressure = self.traffic_config.get('ripple_min_pressure', 1.0)
+
+        # Step 1: Decay existing ripples — O(active_ripples), not O(N_segments)
+        for seg_id in list(self.current_ripples.keys()):
+            self.current_ripples[seg_id] *= self.persistence_factor
+            if self.current_ripples[seg_id] < ripple_min_pressure:
+                del self.current_ripples[seg_id]
+
+        # Step 2: Surgical BFS — only if accidents exist
+        if accidents_list:
+            accident_seg_ids = [str(a.segment_id) for a in accidents_list]
+            self._run_surgical_bfs(road_network, accident_seg_ids, current_time)
+
+        # Step 3: Lazy update — only segments trucks are currently on
+        # trucks param is a list of TruckAgent objects; access truck.truck.current_route
+        for truck_agent in trucks:
+            truck = getattr(truck_agent, 'truck', truck_agent)
+            if getattr(truck, 'status', None) != 'in_transit':
+                continue
+            route = getattr(truck, 'current_route', None)
+            if not route:
+                continue
+            progress = getattr(truck, 'route_progress', 0)
+            seg_objects = route.get('segment_objects', [])
+            if progress < len(seg_objects):
+                seg = seg_objects[progress]
+                if seg is not None:
+                    seg.current_traffic_density = self.get_traffic_density(seg, current_time)
+                    seg.current_speed_kmh = self.get_current_speed(seg, current_time)

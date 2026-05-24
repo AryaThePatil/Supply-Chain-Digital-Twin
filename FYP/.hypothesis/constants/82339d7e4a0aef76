@@ -1,0 +1,4 @@
+# file: C:\Users\aryap\OneDrive\Desktop\Arya_College\FYP_Dynamic\FYP\src\simulation\optimization_pod.py
+# hypothesis_version: 6.151.10
+
+[-1.0, 0.0, 0.0003, 0.01, 0.02, 0.1, 0.99, 1.0, 512, 10000, 100000, '.zip', 'MlpPolicy', '__all__', 'ai', 'algorithm', 'batch_size', 'checkpoint_dir', 'checkpoint_interval', 'cpu', 'enabled', 'ent_coef', 'epsilon_greedy', 'epsilon_min', 'gamma', 'human', 'inference_only', 'learning_rate', 'logs/ppo_tensorboard', 'models/rl', 'n_epochs', 'n_steps', 'net_arch', 'optimization', 'policy_net', 'ppo', 'ppo_routing', 'ppo_routing_latest']

@@ -1,0 +1,4 @@
+# file: C:\Users\aryap\OneDrive\Desktop\Arya_College\FYP_Dynamic\FYP\src\simulation\entities.py
+# hypothesis_version: 6.151.10
+
+[0.0, 0.08, 0.15, 0.2, 0.25, 0.3, 0.95, 1.0, 1.05, 1.1, 1.5, 4.5, 8.0, 20.0, 60.0, 72.0, 100.0, 1000.0, 100, 'Break', 'Driving', 'Sleeping', '_', 'assigned', 'assigned_order_id', 'cancelled', 'capacity_kg', 'cargo_batches_count', 'current_fuel_liters', 'current_load_kg', 'delivered', 'experienced', 'expert', 'fuel_percent', 'idle', 'in_transit', 'lat', 'load_factor', 'location', 'lon', 'novice', 'pending', 'route_progress', 'shift_duration_hours', 'skill_distribution', 'speed_kmh', 'status', 'total_deliveries', 'total_distance_km', 'truck_id', 'truck_type', 'warehouse_id']

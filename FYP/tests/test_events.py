@@ -4,7 +4,7 @@ Unit tests for EventQueue and event types.
 
 import pytest
 from src.simulation.events import EventQueue
-from src.simulation.events.event_types import (
+from src.simulation.events import (
     Event, TruckDepartureEvent, TruckArrivalEvent, OrderPlacedEvent,
     AccidentStartEvent, AccidentEndEvent, WarehouseRestockEvent,
     CustomerArrivalEvent, RouteChangedEvent, LowFuelWarningEvent,

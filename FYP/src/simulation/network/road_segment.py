@@ -6,6 +6,10 @@ Each segment has realistic properties from OSM data and dynamic traffic state.
 
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
+import logging
+logger = logging.getLogger(__name__)
+
+MIN_SPEED_FALLBACK_KMH = 10.0
 
 
 @dataclass
@@ -29,20 +33,28 @@ class RoadSegment:
     osm_data: Dict[str, Any]  # Original OSM data for reference
     is_oneway: bool = False  # True if one-way street
     surface_type: str = 'paved'  # paved, unpaved, gravel, dirt
-    start_location: tuple = None  # (lat, lon) of start node
-    end_location: tuple = None  # (lat, lon) of end node
+    # Locations
+    start_location: Tuple[float, float] = (0.0, 0.0)  # (lat, lon) of start node
+    end_location: Tuple[float, float] = (0.0, 0.0)  # (lat, lon) of end node
     
     # Curved path interpolation (NEW)
     geometry: Optional[List[Tuple[float, float]]] = None  # Way geometry: [(lat, lon), ...]
     geometry_cumulative_distances: Optional[List[float]] = None  # Cumulative distances in km
+    
+    # Zone-based behavior (NEW)
+    zone_type: str = 'RESIDENTIAL'  # OFFICE, SHOPPING, RESIDENTIAL, HIGHWAY
+    zone_multiplier: float = 1.0     # Multiplier for the Gaussian wave amplitude
     
     # Dynamic properties (updated during simulation)
     current_traffic_density: float = 0.0  # vehicles per km per lane
     current_speed_kmh: float = 0.0  # Current average speed
     is_blocked: bool = False  # True if accident blocks this segment
     accident_speed_reduction: float = 0.0  # 0.0 to 1.0 (0 = no effect, 1.0 = complete block)
-    
-    
+
+    # Pre-computed static weight for Stage 1 fast A*
+    # Placeholder default; real value is always set in __post_init__
+    base_weight: float = 0.0
+
     def __post_init__(self):
         """Initialize dynamic properties and enforce defaults."""
         # Enforce valid road type
@@ -80,7 +92,7 @@ class RoadSegment:
             if isinstance(self.lanes, list):
                 self.lanes = int(self.lanes[0])
             else:
-                self.lanes = int(self.lanes)
+                self.lanes = int(float(self.lanes)) # Handle possible string '2.0'
         except (ValueError, TypeError):
              self.lanes = 1
              
@@ -92,19 +104,28 @@ class RoadSegment:
             else:
                 self.surface_type = 'paved'
 
-        # OPTIMIZATION 6: Geometry interpolation cache
+        # OPTIMIZATION: Geometry interpolation cache
         self._interp_cache = {}  # distance_key -> (lat, lon)
         self._cache_resolution = 0.01  # 10 meters (~0.01 km)
 
         # Start with free-flow speed (no traffic)
         self.current_speed_kmh = self.speed_limit_kmh
+
+        # Pre-compute static weight for Stage 1 fast A*
+        # base_weight = free-flow traversal time (hours) — lower bound on actual cost
+        if self.speed_limit_kmh > 0:
+            self.base_weight = self.length_km / self.speed_limit_kmh
+        else:
+            self.base_weight = self.length_km / MIN_SPEED_FALLBACK_KMH
     
-    def get_travel_time_minutes(self, speed_kmh: Optional[float] = None) -> float:
+    def get_travel_time_minutes(self, speed_kmh: Optional[float] = None, 
+                                truck_type_config: Optional[Dict[str, Any]] = None) -> float:
         """
         Calculate travel time for this segment.
         
         Args:
             speed_kmh: Speed to use (if None, uses current_speed_kmh)
+            truck_type_config: Optional truck config for maneuverability index (NEW)
         
         Returns:
             Travel time in minutes
@@ -116,9 +137,17 @@ class RoadSegment:
         speed = speed_kmh if speed_kmh is not None else self.current_speed_kmh
         
         # SAFETY: If speed not updated or zero, fall back to speed limit
-        # This ensures segments outside active zones still route correctly
         if speed <= 0:
             speed = self.speed_limit_kmh
+
+        # Apply truck-type maneuverability (Linked Logic)
+        if truck_type_config and 'maneuverability_index' in truck_type_config:
+            # Small trucks (index 1.2) are faster in dense traffic
+            # Large trucks (index 0.8) are slower
+            # The effect scales with traffic density
+            density_factor = self.current_traffic_density / 50.0 # Normalize against moderate traffic
+            maneuver_mult = 1.0 + (truck_type_config['maneuverability_index'] - 1.0) * density_factor
+            speed *= max(0.5, maneuver_mult)
         
         # Apply surface type speed reduction
         speed *= self._get_surface_speed_multiplier()
@@ -314,8 +343,8 @@ class RoadSegment:
             mult = 0.5
         
         # Calculate speed reduction
-        # Short segment (100m): blockage_fraction = 0.5 → 25-40% speed reduction
-        # Long segment (5km): blockage_fraction = 0.01 → 0.3-0.8% speed reduction
+        # Short segment (100m): blockage_fraction = 0.5 ? 25-40% speed reduction
+        # Long segment (5km): blockage_fraction = 0.01 ? 0.3-0.8% speed reduction
         self.accident_speed_reduction = min(1.0, blockage_fraction * mult)
         
         # Keep is_blocked for backward compatibility (set if >80% reduction)
@@ -466,4 +495,3 @@ class RoadSegment:
                 f"length={self.length_km:.2f}km, "
                 f"speed={self.current_speed_kmh:.1f}km/h, "
                 f"blocked={self.is_blocked})")
-

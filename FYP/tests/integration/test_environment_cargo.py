@@ -4,8 +4,8 @@ Tests that environmental conditions (temperature, humidity) from
 WeatherModel correctly affect cargo RSL degradation in OrangeBatch.
 """
 import pytest
-from src.simulation.models.weather_model import WeatherModel
-from src.simulation.entities.orange_batch import OrangeBatch
+from src.simulation.environment_models import WeatherModel
+from src.simulation.entities import OrangeBatch
 from datetime import datetime, timedelta
 
 

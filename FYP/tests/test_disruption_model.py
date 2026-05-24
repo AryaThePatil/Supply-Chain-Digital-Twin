@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from src.simulation.models.disruption_model import DisruptionModel
+from src.simulation.environment_models import DisruptionModel
 
 class TestDisruptionModel:
     @pytest.fixture

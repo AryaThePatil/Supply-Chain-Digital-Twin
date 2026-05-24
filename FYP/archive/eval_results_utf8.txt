@@ -1,0 +1,5 @@
+﻿[OK] Configuration validated successfully
+[WEATHER] Loading weather dataset from data/processed/weather/nagpur_historical.parquet
+[OK] Loaded 8760 weather records
+  - Time range: 0 to 525540 minutes
+  - Weather states: ['clear', 'cloudy', 'heavy_rain', 'light_rain', 'partly_cloudy', 'rain']

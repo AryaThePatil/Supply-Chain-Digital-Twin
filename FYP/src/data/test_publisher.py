@@ -27,10 +27,10 @@ class TestPublisher:
     def on_connect(self, client, userdata, flags, rc):
         """Callback when connected to broker"""
         if rc == 0:
-            print(f"✓ Connected to MQTT broker at {self.broker}:{self.port}")
+            print(f"? Connected to MQTT broker at {self.broker}:{self.port}")
             self.connected = True
         else:
-            print(f"✗ Connection failed with code {rc}")
+            print(f"? Connection failed with code {rc}")
             
     def on_disconnect(self, client, userdata, rc):
         """Callback when disconnected from broker"""
@@ -54,7 +54,7 @@ class TestPublisher:
                 raise ConnectionError("Failed to connect within timeout")
                 
         except Exception as e:
-            print(f"✗ Error connecting to broker: {e}")
+            print(f"? Error connecting to broker: {e}")
             raise
             
     def disconnect(self):
@@ -66,7 +66,7 @@ class TestPublisher:
     def generate_freight_data(self, freight_id="test-truck-01"):
         """Generate realistic freight sensor data"""
         # Simulate refrigerated transport conditions
-        base_temp = 4.0  # Target refrigeration temperature (°C)
+        base_temp = 4.0  # Target refrigeration temperature (?C)
         base_humidity = 65.0  # Target humidity (%)
         
         # Add realistic fluctuations
@@ -103,14 +103,14 @@ class TestPublisher:
             result = self.client.publish(topic, json_payload, qos=0)
             
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                print(f"✓ Published to {topic}: {json_payload}")
+                print(f"? Published to {topic}: {json_payload}")
                 return True
             else:
-                print(f"✗ Failed to publish to {topic}")
+                print(f"? Failed to publish to {topic}")
                 return False
                 
         except Exception as e:
-            print(f"✗ Error publishing: {e}")
+            print(f"? Error publishing: {e}")
             return False
             
     def run(self, interval=1.0, duration=None):
@@ -134,7 +134,7 @@ class TestPublisher:
             while True:
                 # Check duration
                 if duration and (time.time() - start_time) >= duration:
-                    print(f"\n✓ Completed {duration}s test run")
+                    print(f"\n? Completed {duration}s test run")
                     break
                 
                 # Generate and publish data
@@ -147,7 +147,7 @@ class TestPublisher:
                 time.sleep(interval)
                 
         except KeyboardInterrupt:
-            print(f"\n\n✓ Stopped by user")
+            print(f"\n\n? Stopped by user")
         finally:
             print(f"Total messages published: {message_count}")
 
@@ -171,7 +171,7 @@ def main():
         publisher.connect()
         publisher.run(interval=args.interval, duration=args.duration)
     except Exception as e:
-        print(f"\n✗ Error: {e}")
+        print(f"\n? Error: {e}")
     finally:
         publisher.disconnect()
 

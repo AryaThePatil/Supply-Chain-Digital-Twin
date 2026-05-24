@@ -4,7 +4,7 @@ Tests that weather changes correctly propagate to traffic model
 and affect speed calculations and density.
 """
 import pytest
-from src.simulation.models.weather_model import WeatherModel
+from src.simulation.environment_models import WeatherModel
 from src.simulation.network.traffic_model import TrafficModel
 from unittest.mock import Mock
 

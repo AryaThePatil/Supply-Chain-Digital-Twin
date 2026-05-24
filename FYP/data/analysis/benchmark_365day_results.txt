@@ -1,0 +1,12 @@
+365-DAY BENCHMARK RESULTS: Baseline vs RL-Enabled (PPO)
+====================================================================
+Metric                           Baseline            RL       Delta  Verdict
+Service Level (%)                   99.9%         99.9%        +0.0%  BETTER
+Orders Fulfilled                 6,972.0      7,004.0       +32.0  BETTER
+Kg Delivered                 16,479,459.3 kg  16,545,174.9 kg   +65,715.6 kg  BETTER
+Avg Cargo RSL (%)                  100.0%        100.0%        -0.0%  WORSE
+Avg Fuel Level (%)                  78.2%         77.9%        -0.3%  WORSE
+Stockouts                       57,746.0     58,895.0    +1,149.0  WORSE
+Road Accidents                   2,063.0      2,037.0       -26.0  BETTER
+Warehouse Restocks               2,973.0      3,027.0       +54.0  BETTER
+====================================================================

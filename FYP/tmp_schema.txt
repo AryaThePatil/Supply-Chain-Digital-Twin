@@ -1,0 +1,16 @@
+TELEMETRY COLS: ['timestamp', 'entity_type', 'entity_id', 'status_code', 'fuel', 'rsl', 'lat', 'lon']
+
+{'timestamp': 5.0, 'entity_type': 'truck', 'entity_id': 'WH001_truck_small_00', 'status_code': 0.0, 'fuel': 100.0, 'rsl': 100.0, 'lat': 21.075616, 'lon': 79.144879}
+{'timestamp': 5.0, 'entity_type': 'truck', 'entity_id': 'WH001_truck_small_01', 'status_code': 0.0, 'fuel': 100.0, 'rsl': 100.0, 'lat': 21.075616, 'lon': 79.144879}
+{'timestamp': 5.0, 'entity_type': 'truck', 'entity_id': 'WH001_truck_small_02', 'status_code': 0.0, 'fuel': 100.0, 'rsl': 100.0, 'lat': 21.075616, 'lon': 79.144879}
+{'timestamp': 5.0, 'entity_type': 'truck', 'entity_id': 'WH001_truck_medium_00', 'status_code': 0.0, 'fuel': 100.0, 'rsl': 100.0, 'lat': 21.075616, 'lon': 79.144879}
+{'timestamp': 5.0, 'entity_type': 'truck', 'entity_id': 'WH002_truck_small_00', 'status_code': 0.0, 'fuel': 100.0, 'rsl': 100.0, 'lat': 21.20921, 'lon': 79.061151}
+
+
+EVENTS COLS: ['timestamp', 'event_type', 'data']
+
+{'timestamp': 0.0, 'event_type': 'warehouse_reorder_triggered', 'data': '{"type": "warehouse_reorder_triggered", "warehouse_id": "WH001", "time": 0.0, "current_inventory": 4218.905812170317, "restock_amount": 0.0, "eta": 1440.0}'}
+{'timestamp': 280.0, 'event_type': 'road_accident', 'data': '{"accident_id": "ACC0001", "segment_id": "3206273885_11138318760_0", "severity": "minor", "duration_minutes": 17.63535782252633, "speed_reduction_percent": 17.315683221326086}'}
+{'timestamp': 345.0, 'event_type': 'road_accident', 'data': '{"accident_id": "ACC0002", "segment_id": "3756998843_3756998933_0", "severity": "minor", "duration_minutes": 7.5, "speed_reduction_percent": 3.5127631851160674}'}
+{'timestamp': 360.0, 'event_type': 'warehouse_restock', 'data': '{"time": 360, "event_type": "warehouse_restock", "warehouse_id": "WH001", "product_type": "oranges", "quantity_kg": 3616.2049818602723}'}
+{'timestamp': 360.0, 'event_type': 'warehouse_restock', 'data': '{"time": 360, "event_type": "warehouse_restock", "warehouse_id": "WH002", "product_type": "oranges", "quantity_kg": 22508.167136571035}'}

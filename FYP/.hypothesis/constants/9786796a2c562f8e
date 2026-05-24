@@ -1,0 +1,4 @@
+# file: C:\Users\aryap\OneDrive\Desktop\Arya_College\FYP_Dynamic\FYP\src\simulation\sensor.py
+# hypothesis_version: 6.151.10
+
+[0.0, 5e-05, 0.02, 0.03, 0.05, 0.5, 2.0, 60.0, 'delay_seconds', 'noise_std_dev', 'packet_loss_rate']

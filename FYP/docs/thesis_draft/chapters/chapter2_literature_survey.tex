@@ -1,0 +1,274 @@
+% ============================================================
+%  CHAPTER 2: LITERATURE SURVEY
+% ============================================================
+\chapter{Literature Survey}
+
+This chapter reviews the existing research and techniques relevant to the
+problem addressed in this project. Section~2.1 covers traditional routing and
+vehicle scheduling methods. Section~2.2 discusses the application of machine
+learning to logistics and supply chain forecasting. Section~2.3 provides the
+theoretical foundations of reinforcement learning, including Markov Decision
+Processes, Q-Learning, Deep Q-Networks, and Proximal Policy Optimization, in
+the level of detail required to understand the design decisions made in this
+project.
+
+% ================================================================
+\section{Traditional Routing and Vehicle Scheduling Methods}
+
+% ----------------------------------------------------------------
+\subsection{Dijkstra's Algorithm and A* Search}
+
+Graph-based shortest-path algorithms have been the foundation of computational
+route planning since the late 1950s. Dijkstra's algorithm, introduced in 1959
+\cite{dijkstra1959}, computes the shortest path from a single source node to all
+other nodes in a weighted graph. It is guaranteed to find the optimal path when
+all edge weights are non-negative and deterministic. For logistics applications,
+the road network is modeled as a weighted directed graph where nodes represent
+intersections or depots and edge weights represent travel time or distance.
+
+The A* algorithm, introduced by Hart, Nilsson, and Raphael \cite{hart1968},
+extends Dijkstra's approach by incorporating a heuristic function that estimates
+the remaining distance to the destination. This makes A* substantially faster in
+practice for point-to-point routing. In the baseline configuration of this
+project, a modified A* algorithm is used as the base route planner. However, both
+Dijkstra's algorithm and A* share the fundamental limitation that their cost
+functions are fixed at the time of planning. They cannot respond to events that
+occur while the truck is already in transit, such as a road accident that blocks
+a segment, or a sudden increase in traffic density in a particular zone. This
+static nature makes them unsuitable as a standalone solution for dynamic fleet
+management.
+
+% ----------------------------------------------------------------
+\subsection{The Vehicle Routing Problem and Its Variants}
+
+The Vehicle Routing Problem (VRP), formalized by Dantzig and Ramser in 1959 and
+surveyed comprehensively by Toth and Vigo \cite{toth2002}, seeks to find a set of
+routes for a fleet of vehicles that minimizes total travel cost while satisfying
+the delivery demand of a set of customers. The VRP is a generalization of the
+Traveling Salesman Problem and is known to be NP-hard in the general case.
+
+Several variants of the VRP are directly relevant to the supply chain routing
+problem. The Capacitated VRP (CVRP) adds vehicle load capacity constraints. The
+VRP with Time Windows (VRPTW) adds delivery time deadlines, which is analogous
+to the cargo RSL deadline in this project: a delivery that arrives after the RSL
+expires is effectively a failed delivery. Despite extensive research, VRP solvers
+face two key limitations in the context of this project. First, they are
+computationally expensive and do not scale to real-time dynamic rerouting for
+large fleets. Second, they assume a fixed set of delivery requests known at the
+start, whereas in a real supply chain orders arrive continuously and conditions
+change mid-route.
+
+% ----------------------------------------------------------------
+\subsection{Limitations of Traditional Approaches}
+
+Traditional routing methods share several fundamental limitations that motivate
+the use of reinforcement learning in this project. Their cost functions are
+defined at planning time and cannot adapt once the truck is en route. They
+optimize a single objective, typically distance or time, and cannot dynamically
+balance competing objectives such as fuel efficiency and cargo freshness. They do
+not learn from historical patterns: a truck that repeatedly passes through a
+congested zone at rush hour will receive no benefit from that experience in the
+next planning cycle. These limitations collectively motivate the use of an
+adaptive, learning-based approach.
+
+% ================================================================
+\section{Machine Learning in Supply Chain Management}
+
+% ----------------------------------------------------------------
+\subsection{Regression Models for ETA Forecasting}
+
+Supervised machine learning methods have been applied to demand forecasting and
+travel time estimation in logistics for over a decade. Ridge Regression
+\cite{hoerl1970}, a regularized linear model that penalizes large coefficients
+using an L2 norm, is well-suited to settings where input features are correlated
+and the number of training samples grows incrementally over time. It can be
+updated in an online fashion using partial fitting, making it computationally
+lightweight and suitable for deployment on edge hardware without requiring a GPU.
+
+In this project, Ridge Regression is used as the backbone of the ETA Forecaster.
+The choice of a linear model over a deep neural network is deliberate: the ETA
+Forecaster must update itself after every single road segment traversal, which
+happens hundreds of times per simulated day. A deep neural network would require
+batched gradient descent and would be far too slow for this use case. The Ridge
+Regression model, by contrast, can update incrementally in milliseconds.
+
+% ----------------------------------------------------------------
+\subsection{Deep Learning for Sequential Forecasting}
+
+Recurrent Neural Networks (RNNs) and Long Short-Term Memory (LSTM) networks have
+demonstrated strong performance on sequential logistics data such as hourly demand
+series and historical route time data \cite{sutton2018}. These models can capture
+long-range temporal dependencies that linear models cannot. However, they require
+substantial amounts of training data, fixed-size input sequences, and batch
+training procedures that make them poorly suited for online, per-sample updates.
+
+For the ETA Forecasting component of this project, the computational constraints
+of online learning rule out LSTM-based approaches. The Ridge Regression model
+achieves adequate accuracy for the purpose of route cost estimation while
+remaining practical for real-time deployment.
+
+% ----------------------------------------------------------------
+\subsection{Advantages and Limitations of ML Approaches}
+
+Machine learning models offer significant advantages over traditional statistical
+methods in their ability to capture non-linear relationships and adapt to changing
+data distributions. However, they remain fundamentally predictive: they forecast
+what will happen but do not autonomously make decisions about what to do. A model
+that accurately predicts delivery times cannot itself decide which route to take,
+which truck to dispatch, or when to override a plan due to an emergency. These
+decision-making requirements are precisely what reinforcement learning is designed
+to address.
+
+% ================================================================
+\section{Reinforcement Learning in Logistics}
+
+% ----------------------------------------------------------------
+\subsection{Markov Decision Processes}
+
+Reinforcement learning (RL) is a branch of machine learning in which an agent
+learns to make sequential decisions by interacting with an environment and
+receiving scalar reward signals \cite{sutton2018}. The theoretical foundation of
+most RL algorithms is the Markov Decision Process (MDP), defined as a tuple
+$(S, A, P, R, \gamma)$, where $S$ is the set of possible states, $A$ is the set
+of actions, $P(s' | s, a)$ is the transition probability from state $s$ to state
+$s'$ under action $a$, $R(s, a)$ is the reward received, and $\gamma \in [0, 1)$
+is a discount factor that determines how much the agent values future rewards
+relative to immediate ones.
+
+The objective of the RL agent is to learn a policy $\pi(a | s)$ that maximizes
+the expected cumulative discounted reward:
+
+\begin{equation}
+    J(\pi) = \mathbb{E}_{\pi} \left[ \sum_{t=0}^{\infty} \gamma^t R(s_t, a_t) \right]
+\end{equation}
+
+In the context of this project, the state $s$ is a 25-dimensional vector
+describing the current condition of the truck and its environment (fuel level,
+cargo RSL, traffic density, time of day, zone, and so on). The action $a$ is the
+routing strategy selected by the Central PPO Brain: 0 for Fuel-Priority, 1 for
+RSL-Priority, or 2 for Speed-Priority. The reward $R$ combines a delivery
+completion bonus with penalties for cargo decay, fuel consumption, and retailer
+stockouts.
+
+% ----------------------------------------------------------------
+\subsection{Q-Learning and Deep Q-Networks}
+
+Q-Learning is a model-free, off-policy value-based RL algorithm introduced by
+Watkins in 1989. It maintains a Q-function $Q(s, a)$ representing the expected
+cumulative reward of taking action $a$ in state $s$ and then following the optimal
+policy thereafter. The Q-function is updated after each step using the Bellman
+equation:
+
+\begin{equation}
+    Q(s, a) \leftarrow Q(s, a) + \alpha \left[ r + \gamma \max_{a'} Q(s', a') - Q(s, a) \right]
+\end{equation}
+
+where $\alpha$ is the learning rate, $r$ is the immediate reward, and $s'$ is the
+next state. In its tabular form, Q-Learning stores the Q-values in a table indexed
+by all possible state-action pairs. This becomes impractical when the state space
+is continuous or high-dimensional.
+
+Deep Q-Networks (DQN), introduced by Mnih et al.\ \cite{mnih2015}, resolve this
+limitation by replacing the Q-table with a deep neural network that approximates
+the Q-function across continuous state spaces. Key stabilization techniques
+introduced in DQN include experience replay (storing past transitions in a buffer
+and sampling mini-batches for training) and the use of a separate target network
+that is updated less frequently than the main network, which prevents oscillation
+during training.
+
+In this project, the Edge Q-Learning Agent uses the tabular form of Q-Learning.
+The emergency state space (local hazard severity and number of available alternate
+routes) is small and discrete, making a tabular approach practical. The Edge Agent
+updates its Q-table online after each emergency event, allowing it to learn which
+alternate routes are reliable in specific zones and time periods.
+
+% ----------------------------------------------------------------
+\subsection{Proximal Policy Optimization}
+
+Proximal Policy Optimization (PPO), introduced by Schulman et al.\ \cite{schulman2017},
+is a policy-gradient reinforcement learning algorithm that belongs to the
+actor-critic family. Unlike value-based methods such as DQN, which learn a Q-value
+function and derive the policy implicitly, PPO directly learns a parameterized
+policy $\pi_\theta(a | s)$.
+
+The key innovation of PPO is the clipped surrogate objective function, which
+prevents the policy from changing too rapidly in a single update step:
+
+\begin{equation}
+    L^{CLIP}(\theta) = \mathbb{E}_t \left[ \min \left( r_t(\theta) \hat{A}_t, \;
+    \text{clip}(r_t(\theta), 1 - \epsilon, 1 + \epsilon) \hat{A}_t \right) \right]
+\end{equation}
+
+where $r_t(\theta) = \frac{\pi_\theta(a_t | s_t)}{\pi_{\theta_{old}}(a_t | s_t)}$
+is the probability ratio between the new and old policies, $\hat{A}_t$ is the
+estimated advantage function, and $\epsilon$ is the clipping threshold (typically
+0.2). The clip operation ensures that the policy update is bounded, preventing
+large destabilizing steps that plagued earlier policy gradient methods such as
+REINFORCE.
+
+PPO is well-suited to the Central Brain routing task because the state space is
+continuous and high-dimensional (25 dimensions) and the training process must
+remain stable over a large number of steps. An entropy bonus term with coefficient
+$ent\_coef = 0.01$ is added to the objective to encourage exploration throughout
+training, preventing the policy from collapsing prematurely to a single strategy.
+
+% ----------------------------------------------------------------
+\subsection{Comparison of Reinforcement Learning Techniques}
+
+Table~\ref{tab:rl_comparison} summarizes the properties of the RL techniques
+reviewed in this chapter, with reference to their usage in this project.
+
+\begin{table}[h!]
+\centering
+\caption{Comparison of Reinforcement Learning Techniques}
+\label{tab:rl_comparison}
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Property} & \textbf{Tabular Q-Learning} & \textbf{DQN} & \textbf{PPO} & \textbf{Usage in This Project} \\
+\hline
+Handles Continuous State Space   & No  & Yes & Yes & Required for Central Brain \\
+\hline
+On-Policy / Off-Policy           & Off & Off & On  & Both modes used \\
+\hline
+Training Stability               & Low & Medium & High & Critical for 50k-step run \\
+\hline
+Supports Online Updates          & Yes & No  & No  & Required for Edge Agent \\
+\hline
+Suitable for Discrete Actions    & Yes & Yes & Yes & All three strategies are discrete \\
+\hline
+Computational Cost               & Low & High & High & Low for Edge, High for Central \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[h!]
+\centering
+\caption{Reinforcement Learning Algorithm Characteristics and Applications}
+\label{tab:rl_apps}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Algorithm} & \textbf{Key Characteristics} & \textbf{Application in This Project} \\
+\hline
+Tabular Q-Learning & Simple, online, low memory & Edge Q-Agent emergency rerouting \\
+\hline
+Deep Q-Network & Neural network Q-approximation & Not used (Edge is discrete/small) \\
+\hline
+PPO & Clipped policy gradient, stable & Central Brain strategy selection \\
+\hline
+Ridge Regression & Regularized linear, online updates & ETA Forecaster travel time estimation \\
+\hline
+\end{tabular}
+\end{table}
+
+% ================================================================
+\vspace{1cm}
+\noindent \textbf{Chapter Summary:} This chapter reviewed the three categories of
+techniques relevant to this project. Traditional routing methods such as A* and
+VRP solvers provide deterministic optimal paths but cannot adapt to real-time
+events or balance multiple objectives simultaneously. Machine learning methods
+improve forecasting accuracy but remain predictive rather than decision-making.
+Reinforcement learning, specifically PPO for macro-level strategy selection and
+Q-Learning for micro-level emergency rerouting, addresses both the adaptability
+and decision-making requirements of the problem. The next chapter describes how
+the simulation environment generates data and how that data is transformed into
+state representations for the AI models.

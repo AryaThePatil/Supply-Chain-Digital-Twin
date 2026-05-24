@@ -1,0 +1,4 @@
+# file: C:\Users\aryap\OneDrive\Desktop\Arya_College\FYP_Dynamic\FYP\src\simulation\events.py
+# hypothesis_version: 6.151.10
+
+[0.001, 'EventBus initialized', 'accident_end', 'accident_id', 'accident_start', 'cargo_batch_id', 'cargo_spoiled', 'customer_arrival', 'destination_id', 'duration_minutes', 'event_type', 'final_rsl', 'fuel_liters', 'fuel_percent', 'inventory', 'low_fuel_warning', 'new_route_length', 'old_route_length', 'order_id', 'order_placed', 'product_type', 'quantity_kg', 'reason', 'restock', 'retailer_id', 'route_changed', 'segment_id', 'severity', 'time', 'truck_arrival', 'truck_departure', 'truck_id', 'warehouse_id', 'warehouse_restock']

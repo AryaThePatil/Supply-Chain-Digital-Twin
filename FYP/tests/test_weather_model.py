@@ -1,5 +1,5 @@
 import pytest
-from src.simulation.models.weather_model import WeatherModel
+from src.simulation.environment_models import WeatherModel
 
 class TestWeatherModel:
     @pytest.fixture
@@ -29,9 +29,9 @@ class TestWeatherModel:
         model.state_duration = 60  # Force 60 mins duration
         model.state_start_time = 0
         
-        # Check at 30 mins (should still be clear)
-        state = model.update(current_time=30)
-        assert state == 'clear'
+        # At 30 mins (within duration), no state change should occur
+        events = model.update(current_time=30)
+        assert events == []  # No transition events
         assert model.current_state == 'clear'
 
     def test_state_transition(self, config):

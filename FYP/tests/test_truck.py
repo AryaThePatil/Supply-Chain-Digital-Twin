@@ -1,8 +1,8 @@
 """Unit tests for Truck entity."""
 
 import pytest
-from src.simulation.entities.truck import Truck, TruckType
-from src.simulation.entities.orange_batch import OrangeBatch
+from src.simulation.entities import Truck, TruckType
+from src.simulation.entities import OrangeBatch
 from datetime import datetime
 
 
@@ -159,8 +159,8 @@ def test_is_low_fuel(truck):
 def test_load_cargo_success(truck):
     """Test loading cargo within capacity."""
     batches = [
-        OrangeBatch("batch1", 300, datetime.now()),
-        OrangeBatch("batch2", 400, datetime.now())
+        OrangeBatch("batch1", 300, datetime.now(), 0.0),
+        OrangeBatch("batch2", 400, datetime.now(), 0.0)
     ]
     
     success = truck.load_cargo(batches)
@@ -172,8 +172,8 @@ def test_load_cargo_success(truck):
 def test_load_cargo_exceeds_capacity(truck):
     """Test loading cargo that exceeds capacity."""
     batches = [
-        OrangeBatch("batch1", 800, datetime.now()),
-        OrangeBatch("batch2", 400, datetime.now())
+        OrangeBatch("batch1", 800, datetime.now(), 0.0),
+        OrangeBatch("batch2", 400, datetime.now(), 0.0)
     ]
     
     success = truck.load_cargo(batches)
@@ -185,8 +185,8 @@ def test_load_cargo_exceeds_capacity(truck):
 def test_unload_cargo(truck):
     """Test unloading cargo."""
     batches = [
-        OrangeBatch("batch1", 300, datetime.now()),
-        OrangeBatch("batch2", 400, datetime.now())
+        OrangeBatch("batch1", 300, datetime.now(), 0.0),
+        OrangeBatch("batch2", 400, datetime.now(), 0.0)
     ]
     truck.load_cargo(batches)
     

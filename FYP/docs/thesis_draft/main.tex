@@ -1,0 +1,91 @@
+% ============================================================
+%  MAIN THESIS FILE
+%  Supply Chain Digital Twin using Reinforcement Learning
+%  VNIT Nagpur -- B.Tech CSE Final Year Project 2025
+% ============================================================
+\documentclass[12pt, a4paper, oneside]{report}
+
+% ---- Packages -----------------------------------------------
+\usepackage[top=1in, bottom=1in, left=1.5in, right=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{setspace}
+\usepackage{times}            % Times New Roman font (standard for VNIT reports)
+\usepackage{titlesec}
+\usepackage{tocloft}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{fancyhdr}
+\usepackage{indentfirst}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[backend=biber, style=ieee, sorting=none]{biblatex}
+\addbibresource{references.bib}
+
+% ---- Page Style ---------------------------------------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[R]{\small Supply Chain Digital Twin using RL}
+\fancyhead[L]{\small VNIT Nagpur}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ---- Chapter Heading Style (matches seniors' layout) --------
+\titleformat{\chapter}[display]
+  {\normalfont\large\bfseries\centering}
+  {\chaptertitlename\ \thechapter}
+  {10pt}
+  {\Large}
+\titlespacing{\chapter}{0pt}{-20pt}{20pt}
+
+% ---- Line Spacing -------------------------------------------
+\doublespacing
+
+% ---- Document -----------------------------------------------
+\begin{document}
+
+% ============================================================
+%  FRONT MATTER
+% ============================================================
+\pagenumbering{gobble}        % No page numbers on title pages
+
+\include{frontmatter/title_page}
+\include{frontmatter/declaration_certificate}
+
+\pagenumbering{roman}
+\setcounter{page}{1}
+
+\include{frontmatter/acknowledgement}
+\include{frontmatter/abstract}
+
+\tableofcontents
+\listoffigures
+\listoftables
+
+% ============================================================
+%  MAIN CHAPTERS
+% ============================================================
+\newpage
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
+\include{chapters/chapter1_introduction}
+\include{chapters/chapter2_literature_survey}
+\include{chapters/chapter3_system_design}
+\include{chapters/chapter4_implementation}
+\include{chapters/chapter5_results}
+\include{chapters/chapter6_conclusion}
+
+% ============================================================
+%  REFERENCES
+% ============================================================
+\printbibliography[heading=bibintoc, title={References}]
+
+\end{document}

@@ -304,21 +304,41 @@ async def get_truck_fatigue_trend(
     """
     Get truck driver fatigue over time
     
-    NOTE: Driver fatigue tracking is not currently implemented in the simulation.
-    This endpoint currently returns empty data as a placeholder for future enhancement.
-    
-    When implemented, this will track cumulative driver fatigue hours and help
-    optimize driver schedules and rest periods.
-    
     Args:
         run_id: Simulation run ID
         truck_id: Truck identifier
         window: Aggregation window
         
     Returns:
-        Empty list (feature not yet implemented)
+        Time series of driver fatigue hours
     """
-    # Driver fatigue tracking is not yet implemented in the simulation
-    # Return empty list to avoid errors in frontend charts
-    # TODO: Implement fatigue tracking in Truck/Driver entities
-    return []
+    try:
+        db = get_db()
+        data = db.get_time_series(
+            run_id=run_id,
+            measurement="truck_telemetry",
+            field="driver_fatigue_hours",  # Now matches telemetry field
+            entity_id_field="truck_id",
+            entity_id=truck_id,
+            window=window
+        )
+        
+        # Format for frontend - include simulation timestamp
+        result = []
+        for point in data:
+            result.append({
+                "time": point.get('_time'),
+                "timestamp": point.get('timestamp', 0),
+                "value": point.get('driver_fatigue_hours', 0)
+            })
+        
+        return result
+    except (ValueError, TypeError) as e:
+        # Data processing errors
+        raise HTTPException(status_code=500, detail=f"Fatigue data processing error: {str(e)}")
+    except (KeyError, AttributeError) as e:
+        # Missing fields
+        raise HTTPException(status_code=404, detail=f"No fatigue data found for truck {truck_id}")
+    except Exception as e:
+        # Unexpected errors
+        raise HTTPException(status_code=500, detail=str(e))

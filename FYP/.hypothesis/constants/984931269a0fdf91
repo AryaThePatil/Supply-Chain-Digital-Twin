@@ -1,0 +1,4 @@
+# file: C:\Users\aryap\OneDrive\Desktop\Arya_College\FYP_Dynamic\FYP\src\simulation\ai_manager.py
+# hypothesis_version: 6.151.10
+
+[0.0, 0.01, 1.0, 10.0, 70.0, 100.0, 336.0, 10000, 'current_rsl', 'decay_rate_per_hour', 'ok', 'predicted_rsl_hours', 'predicted_rsl_pct', 'recommendation', 'retailer_id', 'rl_enabled', 'routing', 'rsl_alert', 'segment_objects', 'stockout', 'truck_id']

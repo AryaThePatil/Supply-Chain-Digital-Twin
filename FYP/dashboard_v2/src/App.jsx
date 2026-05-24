@@ -20,11 +20,13 @@ import './App.css';
 import TimePanel from './components/panels/TimePanel';
 import WeatherPanel from './components/panels/WeatherPanel';
 import AnalyticsTab from './components/analytics/AnalyticsTab';
+import AIInsightsPanel from './components/panels/AIInsightsPanel';
 import SimulationSelector from './components/dashboard/SimulationSelector';
 import MapView from './components/dashboard/MapView';
 import StatsCards from './components/dashboard/StatsCards';
 import EntityPanel from './components/dashboard/EntityPanel';
 import TruckList from './components/dashboard/TruckList';
+import ScenarioControlPanel from './components/panels/ScenarioControlPanel';
 import { fixLeafletDefaultIcon } from './utils/mapHelpers';
 import { fetchWithRetry } from './utils/fetchWithRetry';
 import {
@@ -127,12 +129,13 @@ function App() {
       setTrucks(
         data.trucks.map((t) => ({
           truck_id: t.id,
-          location: [t.latitude, t.longitude],
-          status: t.status,
-          speed_kmh: t.speed_kmh,
-          fuel_percent: t.fuel_percent,
-          cargo_kg: t.current_load_kg, // API returns current_load_kg, map to cargo_kg for display
-          timestamp: t.timestamp,
+          location: [t.latitude ?? 0, t.longitude ?? 0],
+          status: t.status ?? 'idle',
+          speed_kmh: t.speed_kmh ?? 0,
+          fuel_percent: t.fuel_percent ?? 0,
+          cargo_kg: t.current_load_kg ?? 0,
+          cargo_rsl: t.cargo_rsl ?? null,
+          timestamp: t.timestamp ?? 0,
         }))
       );
 
@@ -289,6 +292,14 @@ function App() {
         >
           📊 Analytics
         </button>
+        <button
+          className={`tab-button ${currentTab === 'ai' ? 'active' : ''}`}
+          onClick={() => setCurrentTab('ai')}
+          aria-label="Switch to AI Insights View"
+          aria-pressed={currentTab === 'ai'}
+        >
+          🤖 AI Insights
+        </button>
       </div>
 
       {/* Conditional rendering based on active tab */}
@@ -324,6 +335,8 @@ function App() {
                 truckCount={trucks.length}
                 speed={simMetadata.speed}
                 pollInterval={pollInterval}
+                runId={currentSim}
+                trucks={trucks}
               />
 
               <EntityPanel
@@ -339,13 +352,21 @@ function App() {
                 icon="🏪"
                 entities={retailerStates}
                 entityIds={entities.retailer_ids}
+                runId={currentSim}
+                isRetailer={true}
               />
 
-              <TruckList trucks={trucks} />
+              <TruckList trucks={trucks} runId={currentSim} />
+
+              <ScenarioControlPanel
+                trucks={trucks}
+                warehouses={warehouseStates}
+                retailers={retailerStates}
+              />
             </div>
           </div>
         </>
-      ) : (
+      ) : currentTab === 'analytics' ? (
         <AnalyticsTab
           simulationId={currentSim}
           simData={{
@@ -354,6 +375,11 @@ function App() {
             trucks: trucks,
           }}
         />
+      ) : (
+        /* AI Insights tab */
+        <div style={{ padding: '16px', maxWidth: '900px', margin: '0 auto' }}>
+          <AIInsightsPanel runId={currentSim} trucks={trucks} />
+        </div>
       )}
     </div>
   );

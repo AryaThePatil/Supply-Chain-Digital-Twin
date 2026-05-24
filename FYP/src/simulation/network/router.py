@@ -1,26 +1,28 @@
 """
 Router for finding optimal paths through the road network.
 
-Uses A* algorithm with multi-objective cost function considering:
-- Distance (km)
-- Time (minutes)
-- Fuel consumption (liters)
+Uses a Two-Stage A* algorithm:
+  Stage 1 (Fast Search): A* with base_weight × density_factor — no fuel/RSL calculations.
+  Stage 2 (Refine): Full fuel + travel-time metrics computed only for the winner path.
 """
 
 import networkx as nx
 from typing import List, Tuple, Dict, Any, Optional
 import math
+import logging
+
+# Module-level logger
+logger = logging.getLogger(__name__)
 
 
 class Router:
     """
     Router for finding optimal paths in road network.
-    
-    Uses A* pathfinding with configurable cost function that balances:
-    - Distance: Total kilometers traveled
-    - Time: Total travel time in minutes
-    - Fuel: Total fuel consumption in liters
-    
+
+    Uses Two-Stage A* pathfinding:
+    - Stage 1: Fast A* with base_weight × density_factor (no fuel calculations during search)
+    - Stage 2: Full fuel + time metrics computed once for the winner path only
+
     Can avoid blocked segments (accidents) and recalculate routes dynamically.
     """
     
@@ -46,23 +48,131 @@ class Router:
         # Route caching for performance
         self.cache_enabled = routing_config.get('cache_enabled', True)
         self.cache_ttl_minutes = routing_config.get('cache_ttl_minutes', 30)
-        self.route_cache: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        self.route_cache: Dict[Tuple, Dict[str, Any]] = {}
         
-        print(f"🧭 Router initialized")
-        print(f"   Cost weights: distance={self.weight_distance}, "
-              f"time={self.weight_time}, fuel={self.weight_fuel}, quality={self.weight_road_quality}")
-        print(f"   Cache: {'enabled' if self.cache_enabled else 'disabled'}")
+        logger.info(
+            f"Router initialized: distance_wt={self.weight_distance}, "
+            f"time_wt={self.weight_time}, fuel_wt={self.weight_fuel}, quality_wt={self.weight_road_quality}"
+        )
+        if self.cache_enabled:
+            logger.info(f"Route caching enabled (TTL: {self.cache_ttl_minutes} min)")
+
     
-    def find_path(self, start_node: int, end_node: int, 
+    def _fast_edge_cost(self, u: int, v: int, edge_data: Dict[str, Any],
+                        current_time: float, avoid_blocked: bool) -> float:
+        """
+        Stage 1 edge cost: base_weight × density_factor.
+
+        Uses pre-computed base_weight (free-flow time) scaled by current traffic density.
+        No fuel or RSL calculations — those happen in Stage 2 for the winner path only.
+        Falls back to base_weight alone if traffic model is unavailable.
+        """
+        segment_id = edge_data.get('segment_id')
+        if segment_id:
+            segment = self.road_network.get_segment(segment_id)
+        else:
+            segment = self.road_network.get_segment_by_nodes(u, v, 0)
+
+        if segment is None:
+            return float('inf')
+
+        if avoid_blocked and segment.is_blocked:
+            return float('inf')
+
+        # Use pre-computed base_weight (length_km / speed_limit_kmh)
+        base_w = getattr(segment, 'base_weight', None)
+        if base_w is None or base_w <= 0:
+            # Fallback: compute on the fly if base_weight not set (e.g., old segment objects)
+            base_w = segment.length_km / max(segment.speed_limit_kmh, 1.0)
+
+        # Get traffic model from road network (may be None in tests)
+        traffic_model = getattr(self.road_network, 'traffic_model', None)
+        if traffic_model is None:
+            return base_w  # No traffic info — use free-flow weight
+
+        # Compute analytic density factor from traffic model
+        density = traffic_model.get_traffic_density(segment, current_time)
+        road_type = segment.road_type
+        if isinstance(road_type, list):
+            road_type = road_type[0]
+        jam_density = traffic_model.jam_density_per_lane.get(road_type, 100) * max(1, segment.lanes)
+        density_factor = max(1.0, density / jam_density) if jam_density > 0 else 1.0
+
+        return base_w * density_factor
+
+    def _refine_path(self, node_path: List[int], truck_type_config: Dict[str, Any],
+                     load_fraction: float,
+                     cost_weights: Dict[str, float] = None) -> Dict[str, Any]:
+        """
+        Stage 2: Compute full fuel + time metrics for the winner path only.
+
+        Called once after Stage 1 A* finds the optimal node sequence.
+        get_fuel_consumption_liters() is called exactly once per segment here.
+        """
+        segments = []
+        total_distance_km = 0.0
+        total_time_minutes = 0.0
+        total_fuel_liters = 0.0
+
+        # Use override weights if provided, else fall back to instance weights
+        w_dist = cost_weights.get('distance_km', self.weight_distance) if cost_weights else self.weight_distance
+        w_time = cost_weights.get('time_minutes', self.weight_time) if cost_weights else self.weight_time
+        w_fuel = cost_weights.get('fuel_liters', self.weight_fuel) if cost_weights else self.weight_fuel
+
+        for i in range(len(node_path) - 1):
+            u = node_path[i]
+            v = node_path[i + 1]
+
+            edge_data = self.road_network.graph.get_edge_data(u, v)
+            if edge_data is None:
+                continue
+
+            # Handle multigraph: pick best (shortest) parallel edge
+            if isinstance(edge_data, dict) and len(edge_data) > 1:
+                best_key = min(edge_data, key=lambda k: edge_data[k].get('length', float('inf')))
+            elif isinstance(edge_data, dict) and 0 in edge_data:
+                best_key = 0
+            else:
+                best_key = 0
+
+            segment = self.road_network.get_segment_by_nodes(u, v, best_key)
+            if segment is None:
+                continue
+
+            segments.append(segment.segment_id)
+            total_distance_km += segment.length_km
+            total_time_minutes += segment.get_travel_time_minutes()
+            total_fuel_liters += segment.get_fuel_consumption_liters(truck_type_config, load_fraction)
+
+        total_cost = (w_dist * total_distance_km +
+                      w_time * total_time_minutes +
+                      w_fuel * total_fuel_liters)
+
+        segment_objects = [self.road_network.get_segment(sid) for sid in segments
+                           if self.road_network.get_segment(sid) is not None]
+
+        return {
+            'nodes': node_path,
+            'segments': segments,
+            'segment_objects': segment_objects,
+            'total_distance_km': round(total_distance_km, 3),
+            'total_time_minutes': round(total_time_minutes, 2),
+            'total_fuel_liters': round(total_fuel_liters, 3),
+            'total_cost': round(total_cost, 2)
+        }
+
+    def find_path(self, start_node: int, end_node: int,
                   truck_type_config: Dict[str, Any],
                   load_fraction: float = 0.5,
                   avoid_blocked: bool = True,
-                  current_time: float = 0.0) -> Optional[Dict[str, Any]]:
+                  current_time: float = 0.0,
+                  cost_weights: dict = None) -> Optional[Dict[str, Any]]:
         """
-        Find optimal path from start to end node.
-        
-        Uses A* algorithm with multi-objective cost function.
-        
+        Find optimal path using Two-Stage A*.
+
+        Stage 1: Fast A* with base_weight × density_factor (no fuel/RSL calculations).
+        Stage 2: Full fuel + time metrics computed only for the winner path.
+
         Args:
             start_node: Starting node ID
             end_node: Destination node ID
@@ -70,110 +180,63 @@ class Router:
             load_fraction: Fraction of truck capacity loaded (0.0 to 1.0)
             avoid_blocked: If True, avoid blocked segments
             current_time: Current simulation time (for cache invalidation)
-        
+            cost_weights: Optional dict with keys 'distance_km', 'time_minutes', 'fuel_liters'
+                          to override instance weights. Cache key does NOT include cost_weights.
+
         Returns:
-            Dictionary with route information:
-            {
-                'nodes': [node_ids],
-                'segments': [segment_ids],
-                'total_distance_km': float,
-                'total_time_minutes': float,
-                'total_fuel_liters': float,
-                'total_cost': float
-            }
-            Returns None if no path exists
+            Route dict with same shape as before, or None if no path exists.
         """
-        # Check cache
-        cache_key = (start_node, end_node)
+        # Cache check (unchanged)
+        quant_load = round(load_fraction, 1)
+        truck_hash = hash(tuple(sorted((k, v) for k, v in truck_type_config.items() if isinstance(v, (int, float, str)))))
+        cache_key = (start_node, end_node, avoid_blocked, quant_load, truck_hash)
+
         if self.cache_enabled and cache_key in self.route_cache:
             cached_route = self.route_cache[cache_key]
-            # Check if cache is still valid
             if current_time - cached_route['cached_at'] < self.cache_ttl_minutes:
-                # Verify no segments are blocked
                 if not avoid_blocked or not self._route_has_blocked_segments(cached_route):
                     return cached_route['route']
-        
-        # Define cost function for A*
-        def edge_cost(u: int, v: int, edge_data: Dict[str, Any]) -> float:
-            """Calculate cost for traversing an edge."""
-            # Get segment_id from edge data (we stored it when building network)
-            segment_id = edge_data.get('segment_id')
-            
-            if segment_id:
-                segment = self.road_network.get_segment(segment_id)
-            else:
-                # Fallback: try to find segment by nodes (assume key=0)
-                segment = self.road_network.get_segment_by_nodes(u, v, 0)
-            
-            if segment is None:
-                return float('inf')
-            
-            # Skip blocked segments if requested
-            if avoid_blocked and segment.is_blocked:
-                return float('inf')
-            
-            # Calculate components
-            distance_km = segment.length_km
-            time_minutes = segment.get_travel_time_minutes()
-            fuel_liters = segment.get_fuel_consumption_liters(truck_type_config, load_fraction)
-            
-            # Apply road quality penalty from config
-            surface = segment.surface_type.lower() if segment.surface_type else 'unknown'
-            road_penalties = self.config.get('routing', {}).get('road_quality_penalties', {})
-            quality_penalty = road_penalties.get(surface, 1.5)  # Default to 1.5 for unknown
-            
-            # Additional lane penalty (narrow roads) from config
-            if segment.lanes == 1:
-                lane_penalty = self.config.get('routing', {}).get('single_lane_penalty', 1.0)
-                quality_penalty += lane_penalty
-            
-            # Multi-objective cost
-            # Cost = Distance + Time + Fuel + QualityPenalty * Weight
-            cost = (self.weight_distance * distance_km +
-                   self.weight_time * time_minutes +
-                   self.weight_fuel * fuel_liters +
-                   self.weight_road_quality * quality_penalty)
-            
-            return cost
-        
-        # Define heuristic function for A* (straight-line distance)
+
+        # Use override weights if provided, else fall back to instance weights
+        w_dist = cost_weights.get('distance_km', self.weight_distance) if cost_weights else self.weight_distance
+        w_time = cost_weights.get('time_minutes', self.weight_time) if cost_weights else self.weight_time
+        w_fuel = cost_weights.get('fuel_liters', self.weight_fuel) if cost_weights else self.weight_fuel
+
+        # Stage 1: Fast A* — no fuel/RSL calculations
+        def fast_edge_cost(u: int, v: int, edge_data: Dict[str, Any]) -> float:
+            return self._fast_edge_cost(u, v, edge_data, current_time, avoid_blocked)
+
         def heuristic(u: int, v: int) -> float:
-            """Estimate cost from u to v using straight-line distance."""
             pos_u = self.road_network.get_node_position(u)
             pos_v = self.road_network.get_node_position(v)
-            
             if pos_u is None or pos_v is None:
                 return 0.0
-            
-            # Haversine distance
             distance_km = self._haversine_distance(pos_u[0], pos_u[1], pos_v[0], pos_v[1])
-            
-            # Estimate cost using distance weight only (lower bound)
-            return self.weight_distance * distance_km
-        
-        # Run A* algorithm
+            # True edge cost is in TIME (hours). Assume an absolute max theoretical speed of 120 km/h 
+            # to guarantee the heuristic never overestimates the true travel time.
+            return distance_km / 120.0
+
         try:
             node_path = nx.astar_path(
                 self.road_network.graph,
                 start_node,
                 end_node,
                 heuristic=heuristic,
-                weight=edge_cost
+                weight=fast_edge_cost
             )
         except (nx.NetworkXNoPath, nx.NodeNotFound):
-            # No path exists
             return None
-        
-        # Build route information
-        route = self._build_route_info(node_path, truck_type_config, load_fraction)
-        
+
+        # Stage 2: Refine — full metrics for winner path only
+        route = self._refine_path(node_path, truck_type_config, load_fraction, cost_weights)
+
         # Cache the route
         if self.cache_enabled:
             self.route_cache[cache_key] = {
                 'route': route,
                 'cached_at': current_time
             }
-        
+
         return route
     
     def _build_route_info(self, node_path: List[int], 
@@ -181,6 +244,9 @@ class Router:
                          load_fraction: float) -> Dict[str, Any]:
         """
         Build detailed route information from node path.
+
+        Kept for backward compatibility. New code should use _refine_path() instead,
+        which is the Stage 2 component of the Two-Stage A* pipeline.
         
         Args:
             node_path: List of node IDs in path
@@ -322,9 +388,6 @@ class Router:
             retailers: List of retailer agents
             truck_types: Dictionary of truck type configurations
         """
-        import logging
-        logger = logging.getLogger(__name__)
-        
         if not self.cache_enabled:
             logger.info("Route pre-computation skipped (cache disabled)")
             return
@@ -362,7 +425,7 @@ class Router:
                 if route:
                     route_count += 1
         
-        logger.info(f"Pre-computed {route_count} routes ({len(warehouses)} WH × {len(retailers)} retailers)")
+        logger.info(f"Pre-computed {route_count} routes ({len(warehouses)} WH x {len(retailers)} retailers)")
 
     
     def should_reroute(self, current_route: Dict[str, Any], 

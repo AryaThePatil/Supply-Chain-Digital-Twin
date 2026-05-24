@@ -122,9 +122,9 @@ class TestSimulationSystemE2E:
     @pytest.mark.slow
     def test_simulation_basic_structure(self, minimal_system_config):
         """Test that simulation components can be instantiated without errors."""
-        from src.simulation.models.weather_model import WeatherModel
+        from src.simulation.environment_models import WeatherModel
         from src.simulation.network.traffic_model import TrafficModel
-        from src.simulation.models.disruption_model import DisruptionModel
+        from src.simulation.environment_models import DisruptionModel
         
         # Instantiate all core models
         try:
@@ -147,7 +147,7 @@ class TestSimulationSystemE2E:
     @pytest.mark.slow
     def test_models_interact_without_errors(self, minimal_system_config):
         """Test that models can interact with each other."""
-        from src.simulation.models.weather_model import WeatherModel
+        from src.simulation.environment_models import WeatherModel
         from src.simulation.network.traffic_model import TrafficModel
         from unittest.mock import Mock
         
@@ -182,7 +182,7 @@ class TestSimulationSystemE2E:
     @pytest.mark.slow
     def test_metrics_stay_within_bounds(self, minimal_system_config):
         """Test that simulation metrics stay within realistic bounds over time."""
-        from src.simulation.models.weather_model import WeatherModel
+        from src.simulation.environment_models import WeatherModel
         from src.simulation.network.traffic_model import TrafficModel
         from unittest.mock import Mock
         

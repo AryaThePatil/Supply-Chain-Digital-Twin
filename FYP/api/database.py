@@ -499,17 +499,21 @@ class InfluxDBManager:
             |> keep(columns: ["truck_id", "status_code", "speed_kmh", "current_load_kg", "fuel_percent", "latitude", "longitude", 
                              "timestamp", "total_distance_km", "load_factor", "cargo_batches_count", 
                              "total_deliveries", "route_progress", "assigned_order_id", "total_fuel_consumed_liters", 
-                             "current_fuel_liters"])
+                             "current_fuel_liters", "cargo_rsl"])
         '''
         
-        # Status code to string mapping (reverse of engine.py mapping)
+        # Status code to string mapping — must match engine.py status_codes exactly:
+        # 'idle':0.0, 'loading':1.0, 'in_transit':2.0, 'unloading':3.0,
+        # 'unloading_complete':4.0, 'arrived':5.0, 'refueling':6.0, 'destroyed':7.0
         status_code_map = {
             0.0: 'idle',
-            1.0: 'in_transit',
-            2.0: 'loading',
+            1.0: 'loading',
+            2.0: 'in_transit',
             3.0: 'unloading',
-            4.0: 'refueling',
-            5.0: 'maintenance',
+            4.0: 'unloading_complete',
+            5.0: 'arrived',
+            6.0: 'refueling',
+            7.0: 'destroyed',
             -1.0: 'unknown'
         }
         
