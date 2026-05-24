@@ -1,22 +1,22 @@
 # Digital Twin for Supply Chain Management
 
-A comprehensive digital twin simulation of an orange supply chain network, featuring real-time agent-based modeling, IoT sensor simulation, and interactive visualization.
+A digital twin simulation of an orange supply chain network featuring real-time agent-based modeling, IoT sensor simulation, and interactive visualization.
 
-## 🎯 Overview
+## Overview
 
-This Final Year Project implements a dynamic digital twin for a food supply chain, simulating warehouses, retailers, trucks, and the complete logistics network. The system provides real-time monitoring, analytics, and optimization capabilities.
+This Final Year Project implements a dynamic digital twin for a perishable food supply chain. It simulates warehouses, retailers, trucks, and the complete logistics network to provide real-time monitoring, analytics, and optimization capabilities.
 
-## ✨ Features
+## Features
 
-- **Agent-Based Simulation**: Autonomous warehouse, retailer, and truck agents
-- **Real-Time Data Streaming**: MQTT-based telemetry and event logging
-- **Time-Series Database**: InfluxDB for efficient storage and querying
-- **Interactive Dashboard**: React-based visualization with maps and charts
-- **IoT Sensor Simulation**: GPS, temperature, and inventory sensors
-- **Traffic & Weather Modeling**: Realistic environmental factors
-- **Route Optimization**: Dynamic pathfinding with real road networks
+- **Agent-Based Simulation**: Autonomous warehouse, retailer, and truck agents.
+- **Real-Time Data Streaming**: MQTT-based telemetry and event logging.
+- **Time-Series Database**: InfluxDB for efficient storage and querying.
+- **Interactive Dashboard**: React-based visualization with map tracking and charts.
+- **IoT Sensor Simulation**: Simulated GPS, temperature, and inventory sensors.
+- **Traffic & Weather Modeling**: Incorporation of environmental factors.
+- **Route Optimization**: Dynamic pathfinding utilizing real road networks.
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ├── FYP/
@@ -27,7 +27,7 @@ This Final Year Project implements a dynamic digital twin for a food supply chai
 │   └── docker-compose.yml
 ```
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 - **Backend**: Python, FastAPI
 - **Simulation**: SimPy, NetworkX, OSMnx
@@ -35,14 +35,14 @@ This Final Year Project implements a dynamic digital twin for a food supply chai
 - **Frontend**: React, Leaflet.js, Chart.js
 - **Infrastructure**: Docker, Docker Compose
 
-## 📋 Prerequisites
+## Prerequisites
 
 - Python 3.10+
 - Node.js 16+
 - Docker & Docker Compose
 - Git
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Clone the repository
 
@@ -83,7 +83,7 @@ docker-compose up -d influxdb mosquitto
 ```bash
 # Activate virtual environment
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\\Scripts\\activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -109,15 +109,15 @@ npm run dev
 
 Access the dashboard at `http://localhost:5173`
 
-## 📊 Dashboard Features
+## Dashboard Features
 
-- **Interactive Map**: Real-time truck tracking on OpenStreetMap
-- **KPI Cards**: Inventory levels, deliveries, trucks in transit
-- **Time-Series Charts**: Demand patterns, temperature monitoring
-- **Entity Panels**: Detailed warehouse and retailer information
-- **Analytics**: Historical data visualization and trends
+- **Interactive Map**: Real-time truck tracking on OpenStreetMap.
+- **KPI Cards**: Inventory levels, deliveries, and trucks in transit.
+- **Time-Series Charts**: Demand patterns and temperature monitoring.
+- **Entity Panels**: Detailed warehouse and retailer information.
+- **Analytics**: Historical data visualization and trend tracking.
 
-## ⚙️ Configuration
+## Configuration
 
 Edit `config/simulation_config.yaml` to customize:
 
@@ -127,7 +127,7 @@ Edit `config/simulation_config.yaml` to customize:
 - Traffic and weather patterns
 - Demand models
 
-## 🧪 Testing
+## Testing
 
 ```bash
 # Run unit tests
@@ -137,27 +137,23 @@ pytest tests/
 pytest --cov=src tests/
 ```
 
-## 📈 Performance
+## Performance
 
-- Handles 2+ warehouses, 12+ retailers, 30+ trucks
-- Real-time updates every 1-60 minutes (configurable)
-- Efficient time-series storage and querying
-- Optimized routing algorithms
+- Evaluated to handle 2+ warehouses, 12+ retailers, and 30+ trucks.
+- Configurable real-time updates (1-60 minutes).
+- Time-series storage for efficient querying.
+- Optimized routing algorithms for logistics planning.
 
-## 🤝 Contributing
-
-This is an academic project. Feel free to fork and adapt for your needs.
-
-## 📝 License
+## License
 
 MIT License - see LICENSE file for details
 
-## 📧 Contact
+## Contact
 
 **Arya Patil**  
 GitHub: [@AryaThePatil](https://github.com/AryaThePatil)
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - OpenStreetMap for road network data
 - SimPy for discrete-event simulation
